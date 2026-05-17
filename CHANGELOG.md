@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.3.0 — 2026-05-17
+
+### New
+- **One-line installer**: Fresh installs are now a single command since the repo is public:
+  ```
+  curl -sL https://raw.githubusercontent.com/marsh4200/pos-stock-system/main/install.sh | sudo bash
+  ```
+- The installer clones the repo over HTTPS — no per-server SSH deploy key needed.
+- The installer wires up the in-app updater automatically; brand-new servers can update from the app from minute one.
+
+### Removed
+- `scripts/setup-git.sh` and `scripts/bootstrap-updater.sh` — no longer needed; the main installer handles everything.
+
+### Notes
+Existing v3.2.x installs don't need to change anything. The in-app updater will pull v3.3.0 from GitHub the next time you click Update Now.
+
+---
+
+## v3.2.3 — 2026-05-17
+
+### Fixed
+- "Check for Updates" failed with `sudo: user everton is not allowed` because the API used `sudo -u everton git ...` while already running as `everton`. Removed the redundant sudo layer.
+
+---
+
 ## v3.2.2 — 2026-05-17
 
 ### Fixed (CRITICAL)
