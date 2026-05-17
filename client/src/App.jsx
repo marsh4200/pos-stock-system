@@ -1,0 +1,2287 @@
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  ScanLine, Package, Users, BarChart3, History, Plus, Trash2,
+  AlertTriangle, Search, X, Check, Undo2, LogOut, TrendingDown, Box,
+  Edit3, Volume2, VolumeX, Download, Upload, Settings as SettingsIcon,
+  ChevronDown, ChevronRight, Save, RefreshCw, Loader2, Lock, UserCog,
+  KeyRound, Eye, EyeOff, Calendar, CalendarCheck, Archive, Image
+} from 'lucide-react';
+
+// ============================================================
+// AUTH / API LAYER
+// ============================================================
+const TOKEN_KEY = 'everton_token';
+const getToken = () => localStorage.getItem(TOKEN_KEY);
+const setToken = (t) => { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); };
+
+async function apiRequest(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(options.body);
+  }
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const r = await fetch(`/api${path}`, { ...options, headers });
+  if (r.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('auth:expired'));
+    throw new Error('Session expired');
+  }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+const apiGet = (p) => apiRequest(p);
+const apiPost = (p, body) => apiRequest(p, { method: 'POST', body });
+const apiPut = (p, body) => apiRequest(p, { method: 'PUT', body });
+const apiDelete = (p) => apiRequest(p, { method: 'DELETE' });
+
+// ---------- Beep sounds ----------
+function useBeeper() {
+  const ctxRef = useRef(null);
+  const enabledRef = useRef(true);
+  const ensure = () => {
+    if (!ctxRef.current) {
+      try { ctxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+    }
+    return ctxRef.current;
+  };
+  const tone = (freq, dur = 0.08, type = 'sine', vol = 0.15) => {
+    if (!enabledRef.current) return;
+    const ctx = ensure();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  };
+  return {
+    success: () => tone(1200, 0.07),
+    error: () => { tone(220, 0.12, 'square'); setTimeout(() => tone(180, 0.15, 'square'), 130); },
+    confirm: () => { tone(880, 0.08); setTimeout(() => tone(1320, 0.12), 90); },
+    employee: () => { tone(660, 0.06); setTimeout(() => tone(990, 0.1), 70); },
+    setEnabled: (v) => { enabledRef.current = v; },
+  };
+}
+
+function useBarcodeScanner(onScan, enabled = true) {
+  const bufRef = useRef('');
+  const lastKeyTs = useRef(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const handler = (e) => {
+      const t = e.target;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return;
+      const now = Date.now();
+      const dt = now - lastKeyTs.current;
+      lastKeyTs.current = now;
+      if (e.key === 'Enter') {
+        if (bufRef.current.length >= 3) onScan(bufRef.current);
+        bufRef.current = '';
+        return;
+      }
+      if (dt > 100 && bufRef.current.length > 0) bufRef.current = '';
+      if (e.key.length === 1) bufRef.current += e.key;
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onScan, enabled]);
+}
+
+const fmtDateTime = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const fmtDate = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ============================================================
+function ConfirmDialog({ title, message, confirmLabel = 'Delete', confirmClass = 'bg-red-500 hover:bg-red-400', onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+        <div className="p-5">
+          <h3 className="text-lg font-bold mb-2">{title}</h3>
+          <p className="text-zinc-400 text-sm">{message}</p>
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={onConfirm} className={`px-4 py-2 font-semibold rounded-md text-white ${confirmClass}`}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, className = '', children }) {
+  return (
+    <div className={className}>
+      <label className="block text-xs text-zinc-500 uppercase tracking-wide mb-1">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+// ============================================================
+// BRANDING (used on login/setup/header)
+// ============================================================
+function useBranding() {
+  const [branding, setBranding] = useState({ systemName: 'EVERTON ENGINEERING', systemSubtitle: 'Tooling Stock Management', hasLogo: false, logoVersion: 0 });
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch('/api/branding');
+      const d = await r.json();
+      setBranding(d);
+    } catch {}
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  return { branding, refreshBranding: refresh };
+}
+
+function HeaderLogo({ branding, size = 'lg' }) {
+  const cls = size === 'lg' ? 'w-16 h-16 rounded-xl' : 'w-10 h-10 rounded-lg';
+  const inner = size === 'lg' ? 'w-9 h-9' : 'w-6 h-6';
+  if (branding.hasLogo) {
+    return (
+      <div className={`${cls} bg-zinc-900 border border-zinc-800 flex items-center justify-center overflow-hidden`}>
+        <img src={`/api/branding/logo?v=${branding.logoVersion}`} alt="Logo" className="w-full h-full object-contain" />
+      </div>
+    );
+  }
+  return (
+    <div className={`${cls} bg-amber-500 flex items-center justify-center`}>
+      <Box className={`${inner} text-zinc-900`} />
+    </div>
+  );
+}
+
+// ============================================================
+// SETUP SCREEN
+// ============================================================
+function SetupScreen({ onDone, branding }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr(null);
+    if (!username.trim() || username.length < 3) return setErr('Username must be at least 3 characters');
+    if (password.length < 6) return setErr('Password must be at least 6 characters');
+    if (password !== confirm) return setErr('Passwords do not match');
+    setBusy(true);
+    try {
+      const r = await fetch('/api/auth/setup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Setup failed');
+      setToken(data.token);
+      onDone(data.user);
+    } catch (ex) { setErr(ex.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        <div className="flex flex-col items-center mb-8">
+          <div className="mb-3"><HeaderLogo branding={branding} size="lg" /></div>
+          <h1 className="text-2xl font-bold tracking-tight text-center">{branding.systemName}</h1>
+          <div className="text-sm text-zinc-500">{branding.systemSubtitle} — First-Time Setup</div>
+        </div>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
+          <div className="flex items-center gap-2 text-amber-400 mb-1">
+            <Lock className="w-4 h-4" /><h2 className="font-semibold">Create your admin account</h2>
+          </div>
+          <p className="text-sm text-zinc-500 mb-5">This account will be used to log in and manage everything. You can add more admins later.</p>
+          <form onSubmit={submit} className="space-y-4">
+            <Field label="Admin Username">
+              <input value={username} onChange={e => setUsername(e.target.value)} className="input" autoFocus />
+            </Field>
+            <Field label="Password (min 6 characters)">
+              <div className="relative">
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} className="input pr-10" />
+                <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </Field>
+            <Field label="Confirm Password">
+              <input type={showPw ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} className="input" />
+            </Field>
+            {err && <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-3 py-2 rounded-md text-sm">{err}</div>}
+            <button type="submit" disabled={busy}
+              className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-bold py-3 rounded-md flex items-center justify-center gap-2">
+              {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
+              Create Admin & Continue
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN SCREEN
+// ============================================================
+function LoginScreen({ onLogin, branding }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr(null);
+    setBusy(true);
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Login failed');
+      setToken(data.token);
+      onLogin(data.user);
+    } catch (ex) { setErr(ex.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-8">
+          <div className="mb-3"><HeaderLogo branding={branding} size="lg" /></div>
+          <h1 className="text-2xl font-bold tracking-tight text-center">{branding.systemName}</h1>
+          <div className="text-sm text-zinc-500">{branding.systemSubtitle}</div>
+        </div>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
+          <div className="flex items-center gap-2 text-zinc-300 mb-5">
+            <Lock className="w-4 h-4 text-amber-500" /><h2 className="font-semibold">Sign in</h2>
+          </div>
+          <form onSubmit={submit} className="space-y-4">
+            <Field label="Username">
+              <input value={username} onChange={e => setUsername(e.target.value)} className="input" autoFocus />
+            </Field>
+            <Field label="Password">
+              <div className="relative">
+                <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} className="input pr-10" />
+                <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </Field>
+            {err && <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-3 py-2 rounded-md text-sm">{err}</div>}
+            <button type="submit" disabled={busy}
+              className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-bold py-3 rounded-md flex items-center justify-center gap-2">
+              {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
+              Sign In
+            </button>
+          </form>
+        </div>
+        <div className="text-center text-xs text-zinc-600 mt-4">Sessions expire after 5 minutes of inactivity</div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ROOT
+// ============================================================
+export default function App() {
+  const [stage, setStage] = useState('loading');
+  const [user, setUser] = useState(null);
+  const { branding, refreshBranding } = useBranding();
+
+  // Update document title when branding changes
+  useEffect(() => {
+    document.title = `${branding.systemName} — ${branding.systemSubtitle}`;
+  }, [branding.systemName, branding.systemSubtitle]);
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const r = await fetch('/api/auth/status', {
+        headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {},
+      });
+      const data = await r.json();
+      if (data.needsSetup) { setStage('setup'); return; }
+      if (data.authenticated) { setUser(data.user); setStage('app'); return; }
+      setToken(null);
+      setStage('login');
+    } catch (e) { setStage('login'); }
+  }, []);
+
+  useEffect(() => { checkAuth(); }, [checkAuth]);
+
+  useEffect(() => {
+    const handler = () => { setUser(null); setStage('login'); };
+    window.addEventListener('auth:expired', handler);
+    return () => window.removeEventListener('auth:expired', handler);
+  }, []);
+
+  if (stage === 'loading') {
+    return <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>;
+  }
+  if (stage === 'setup') return <SetupScreen branding={branding} onDone={(u) => { setUser(u); setStage('app'); }} />;
+  if (stage === 'login') return <LoginScreen branding={branding} onLogin={(u) => { setUser(u); setStage('app'); }} />;
+  return <MainApp user={user} branding={branding} refreshBranding={refreshBranding}
+    onLogout={() => { setToken(null); setUser(null); setStage('login'); }} />;
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+function MainApp({ user, branding, refreshBranding, onLogout }) {
+  const [products, setProducts] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [barcodes, setBarcodes] = useState([]);
+  const [movements, setMovements] = useState([]);
+  const [periods, setPeriods] = useState([]);
+  const [currentPeriod, setCurrentPeriod] = useState(null);
+  const [soundOn, setSoundOn] = useState(true);
+  const [route, setRoute] = useState('scan');
+  const [loading, setLoading] = useState(true);
+  const [connError, setConnError] = useState(false);
+  const beeper = useBeeper();
+
+  const refresh = useCallback(async () => {
+    try {
+      const [p, e, b, m, per, cur] = await Promise.all([
+        apiGet('/products'), apiGet('/employees'), apiGet('/barcodes'),
+        apiGet('/movements'), apiGet('/periods'), apiGet('/periods/current'),
+      ]);
+      setProducts(p); setEmployees(e); setBarcodes(b); setMovements(m);
+      setPeriods(per); setCurrentPeriod(cur);
+      setConnError(false);
+    } catch (err) {
+      if (err.message === 'Session expired') return;
+      console.error('Refresh failed:', err);
+      setConnError(true);
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { beeper.setEnabled(soundOn); }, [soundOn, beeper]);
+  useEffect(() => {
+    const id = setInterval(refresh, 10000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const lowStockCount = useMemo(() => products.filter(p => p.stock <= p.minStock).length, [products]);
+
+  const doLogout = async () => {
+    try { await apiPost('/auth/logout'); } catch {}
+    onLogout();
+  };
+
+  if (loading) {
+    return <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center"><div className="flex items-center gap-3 text-zinc-400"><Loader2 className="w-6 h-6 animate-spin" /> Loading…</div></div>;
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col" style={{ fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
+      <header className="bg-zinc-900 border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <HeaderLogo branding={branding} size="sm" />
+          <div>
+            <h1 className="text-lg font-bold tracking-tight">{branding.systemName}</h1>
+            <div className="text-xs text-zinc-500 -mt-0.5">{branding.systemSubtitle}</div>
+          </div>
+          {currentPeriod && (
+            <div className="ml-4 flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-md px-2.5 py-1 text-xs">
+              <Calendar className="w-3.5 h-3.5 text-amber-500" />
+              <span className="text-zinc-400">Period:</span>
+              <span className="font-semibold">{currentPeriod.label}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {connError && (
+            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 px-3 py-1.5 rounded-md text-sm">
+              <AlertTriangle className="w-4 h-4" /> Connection lost
+            </div>
+          )}
+          {lowStockCount > 0 && (
+            <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-400 px-3 py-1.5 rounded-md text-sm">
+              <AlertTriangle className="w-4 h-4" /> {lowStockCount} low stock
+            </div>
+          )}
+          <button onClick={refresh} title="Refresh" className="p-2 rounded-md hover:bg-zinc-800 text-zinc-400">
+            <RefreshCw className="w-5 h-5" />
+          </button>
+          <button onClick={() => setSoundOn(s => !s)} className="p-2 rounded-md hover:bg-zinc-800 text-zinc-400">
+            {soundOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+          </button>
+          <div className="h-6 w-px bg-zinc-800 mx-1"></div>
+          <div className="flex items-center gap-2 bg-zinc-800 rounded-md pl-3 pr-1 py-1">
+            <UserCog className="w-4 h-4 text-amber-500" />
+            <span className="text-sm font-medium">{user.username}</span>
+            <button onClick={doLogout} title="Logout" className="p-1 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        <nav className="w-56 bg-zinc-900 border-r border-zinc-800 p-3 flex flex-col gap-1">
+          <NavBtn icon={ScanLine} label="Issue Stock" active={route==='scan'} onClick={() => setRoute('scan')} highlight />
+          <NavBtn icon={BarChart3} label="Dashboard" active={route==='dashboard'} onClick={() => setRoute('dashboard')} />
+          <NavBtn icon={Package} label="Products" active={route==='products'} onClick={() => setRoute('products')} />
+          <NavBtn icon={Users} label="Operators" active={route==='employees'} onClick={() => setRoute('employees')} />
+          <NavBtn icon={History} label="History" active={route==='history'} onClick={() => setRoute('history')} />
+          <NavBtn icon={TrendingDown} label="Reports" active={route==='reports'} onClick={() => setRoute('reports')} />
+          <NavBtn icon={Archive} label="Monthly Reports" active={route==='monthly'} onClick={() => setRoute('monthly')} />
+          <div className="my-2 border-t border-zinc-800"></div>
+          <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
+          <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.1 · Cloud + Auth</div>
+        </nav>
+
+        <main className="flex-1 overflow-auto">
+          {route === 'scan' && <ScanScreen products={products} employees={employees} barcodes={barcodes} beeper={beeper} refresh={refresh} />}
+          {route === 'dashboard' && <Dashboard products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} />}
+          {route === 'products' && <ProductsScreen products={products} barcodes={barcodes} beeper={beeper} refresh={refresh} />}
+          {route === 'employees' && <EmployeesScreen employees={employees} barcodes={barcodes} movements={movements} refresh={refresh} />}
+          {route === 'history' && <HistoryScreen employees={employees} periods={periods} currentPeriod={currentPeriod} />}
+          {route === 'reports' && <ReportsScreen products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} onMonthClosed={refresh} />}
+          {route === 'monthly' && <MonthlyReportsScreen periods={periods} employees={employees} products={products} />}
+          {route === 'users' && <UsersScreen currentUser={user} />}
+          {route === 'settings' && <SettingsScreen refresh={refresh} branding={branding} refreshBranding={refreshBranding} />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function NavBtn({ icon: Icon, label, active, onClick, highlight }) {
+  return (
+    <button onClick={onClick}
+      className={`flex items-center gap-3 px-3 py-3 rounded-md text-left text-sm font-medium transition ${
+        active ? (highlight ? 'bg-amber-500 text-zinc-900' : 'bg-zinc-800 text-white')
+               : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'
+      }`}>
+      <Icon className="w-5 h-5" />
+      {label}
+    </button>
+  );
+}
+
+// ============================================================
+// SCAN SCREEN
+// ============================================================
+function ScanScreen({ products, employees, barcodes, beeper, refresh }) {
+  const [activeEmployee, setActiveEmployee] = useState(null);
+  const [scanLines, setScanLines] = useState([]);
+  const [flash, setFlash] = useState(null);
+  const [manualScan, setManualScan] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const triggerFlash = (type, msg) => {
+    setFlash({ type, msg });
+    setTimeout(() => setFlash(null), 1500);
+  };
+
+  const productsById = useMemo(() => Object.fromEntries(products.map(p => [p.id, p])), [products]);
+
+  const handleScan = useCallback((code) => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
+    if (!activeEmployee) {
+      const bc = barcodes.find(b => b.value === trimmed && b.employeeId);
+      const emp = bc ? employees.find(e => e.id === bc.employeeId && e.active) : null;
+      if (emp) { setActiveEmployee(emp); beeper.employee(); triggerFlash('ok', `Welcome, ${emp.name}`); }
+      else { beeper.error(); triggerFlash('err', `Unknown operator code: ${trimmed}`); }
+      return;
+    }
+
+    const bc = barcodes.find(b => b.value === trimmed && b.productId);
+    const prod = bc ? products.find(p => p.id === bc.productId && p.active) : null;
+    if (!prod) { beeper.error(); triggerFlash('err', `Unknown product barcode: ${trimmed}`); return; }
+
+    const pendingQty = scanLines.find(l => l.productId === prod.id)?.qty || 0;
+    if (prod.stock - pendingQty <= 0) { beeper.error(); triggerFlash('err', `${prod.name} — no stock available`); return; }
+
+    setScanLines(prev => {
+      const idx = prev.findIndex(l => l.productId === prod.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
+        return next;
+      }
+      return [...prev, { productId: prod.id, qty: 1 }];
+    });
+    beeper.success();
+    triggerFlash('ok', `${prod.name} ×${pendingQty + 1}`);
+  }, [activeEmployee, barcodes, employees, products, scanLines, beeper]);
+
+  useBarcodeScanner(handleScan, true);
+
+  const removeLast = () => {
+    setScanLines(prev => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last.qty > 1) next[next.length - 1] = { ...last, qty: last.qty - 1 };
+      else next.pop();
+      return next;
+    });
+  };
+
+  const removeLine = (productId) => setScanLines(prev => prev.filter(l => l.productId !== productId));
+  const cancelSession = () => { setActiveEmployee(null); setScanLines([]); };
+
+  const confirmIssue = async () => {
+    if (!activeEmployee || scanLines.length === 0 || submitting) return;
+    setSubmitting(true);
+    try {
+      const totalItems = scanLines.reduce((s, l) => s + l.qty, 0);
+      await apiPost('/issue', { employeeId: activeEmployee.id, lines: scanLines });
+      beeper.confirm();
+      triggerFlash('ok', `Issued ${totalItems} item${totalItems>1?'s':''} to ${activeEmployee.name}`);
+      setActiveEmployee(null);
+      setScanLines([]);
+      await refresh();
+    } catch (err) {
+      beeper.error();
+      triggerFlash('err', err.message);
+    } finally { setSubmitting(false); }
+  };
+
+  const onManualSubmit = (e) => {
+    e.preventDefault();
+    if (manualScan.trim()) { handleScan(manualScan.trim()); setManualScan(''); }
+  };
+
+  const totalItems = scanLines.reduce((s, l) => s + l.qty, 0);
+
+  if (!activeEmployee) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-8 relative">
+        {flash && (
+          <div className={`absolute top-8 px-6 py-3 rounded-lg text-base font-semibold ${
+            flash.type === 'ok' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-red-500/20 text-red-300 border border-red-500/40'
+          }`}>{flash.msg}</div>
+        )}
+        <div className="w-32 h-32 bg-zinc-900 border-2 border-amber-500 rounded-full flex items-center justify-center mb-8 animate-pulse">
+          <ScanLine className="w-16 h-16 text-amber-500" />
+        </div>
+        <h2 className="text-3xl font-bold mb-2">Scan operator badge</h2>
+        <p className="text-zinc-500 mb-8">Scan with USB scanner or type the operator code below</p>
+        {employees.length === 0 && (
+          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-3 rounded-md mb-4 text-sm max-w-md text-center">
+            No operators yet. Go to <b>Operators</b> to add your first one.
+          </div>
+        )}
+        {products.length === 0 && (
+          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-4 py-3 rounded-md mb-4 text-sm max-w-md text-center">
+            No products yet. Go to <b>Products</b> to add your tooling stock.
+          </div>
+        )}
+        <form onSubmit={onManualSubmit} className="flex gap-2 w-full max-w-md">
+          <input type="text" value={manualScan} onChange={e => setManualScan(e.target.value)}
+            placeholder="Or type operator code manually…"
+            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-4 py-3 text-base focus:outline-none focus:border-amber-500" />
+          <button type="submit" className="bg-zinc-800 hover:bg-zinc-700 px-5 rounded-md">Go</button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col p-6 relative">
+      {flash && (
+        <div className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg text-base font-semibold shadow-2xl ${
+          flash.type === 'ok' ? 'bg-emerald-500 text-zinc-900' : 'bg-red-500 text-white'
+        }`}>{flash.msg}</div>
+      )}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex items-center justify-between mb-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-amber-500 rounded-full flex items-center justify-center text-zinc-900 font-bold text-lg">
+            {activeEmployee.name.split(' ').map(n => n[0]).join('').slice(0,2)}
+          </div>
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-wide">Active Session</div>
+            <div className="text-xl font-bold">{activeEmployee.name}</div>
+            <div className="text-xs text-zinc-500">{activeEmployee.code} · {activeEmployee.role}</div>
+          </div>
+        </div>
+        <button onClick={cancelSession} className="flex items-center gap-2 text-zinc-400 hover:text-white px-3 py-2 rounded-md hover:bg-zinc-800">
+          <LogOut className="w-4 h-4" /> End Session
+        </button>
+      </div>
+
+      <div className="bg-amber-500/5 border border-amber-500/30 rounded-lg p-4 mb-4 flex items-center gap-3">
+        <ScanLine className="w-6 h-6 text-amber-500 animate-pulse" />
+        <div className="text-amber-200">Scan a product barcode — each scan adds 1 to its quantity</div>
+        <form onSubmit={onManualSubmit} className="ml-auto flex gap-2">
+          <input type="text" value={manualScan} onChange={e => setManualScan(e.target.value)}
+            placeholder="Manual barcode…"
+            className="bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm w-48 focus:outline-none focus:border-amber-500" />
+          <button type="submit" className="bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-md text-sm">Add</button>
+        </form>
+      </div>
+
+      <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden flex flex-col">
+        <div className="px-4 py-2 border-b border-zinc-800 flex items-center justify-between text-xs text-zinc-500 uppercase tracking-wide">
+          <span>Scanned Items</span>
+          <button onClick={removeLast} disabled={scanLines.length === 0}
+            className="flex items-center gap-1.5 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed normal-case">
+            <Undo2 className="w-4 h-4" /> Remove Last Scan
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto">
+          {scanLines.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-zinc-600 text-sm">No items scanned yet</div>
+          ) : (
+            <table className="w-full">
+              <thead className="bg-zinc-900 text-xs text-zinc-500 uppercase tracking-wide sticky top-0">
+                <tr>
+                  <th className="text-left px-4 py-2">Product</th>
+                  <th className="text-left px-4 py-2">SKU</th>
+                  <th className="text-right px-4 py-2">Stock</th>
+                  <th className="text-right px-4 py-2">Qty</th>
+                  <th className="text-right px-4 py-2">Remaining</th>
+                  <th className="w-12"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {scanLines.map(line => {
+                  const p = productsById[line.productId];
+                  if (!p) return null;
+                  const remaining = p.stock - line.qty;
+                  const low = remaining <= p.minStock;
+                  return (
+                    <tr key={line.productId} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                      <td className="px-4 py-3 font-medium">{p.name}</td>
+                      <td className="px-4 py-3 text-zinc-500 font-mono text-xs">{p.sku}</td>
+                      <td className="px-4 py-3 text-right text-zinc-400">{p.stock}</td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="inline-flex items-center justify-center min-w-[2.5rem] h-9 px-3 bg-amber-500 text-zinc-900 font-bold rounded-md">×{line.qty}</span>
+                      </td>
+                      <td className={`px-4 py-3 text-right font-semibold ${low ? 'text-amber-400' : 'text-emerald-400'}`}>{remaining}</td>
+                      <td className="px-2 py-3">
+                        <button onClick={() => removeLine(line.productId)} className="text-zinc-500 hover:text-red-400 p-1">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-4 py-4 border-t border-zinc-800 bg-zinc-900 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-wide">Total Items</div>
+            <div className="text-3xl font-bold">{totalItems}</div>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={cancelSession} className="px-6 py-4 bg-zinc-800 hover:bg-zinc-700 rounded-md font-semibold">Cancel</button>
+            <button onClick={confirmIssue} disabled={scanLines.length === 0 || submitting}
+              className="px-8 py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-900 font-bold rounded-md flex items-center gap-2 text-lg">
+              {submitting ? <Loader2 className="w-6 h-6 animate-spin" /> : <Check className="w-6 h-6" />}
+              CONFIRM & ISSUE
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+function Dashboard({ products, movements, employees, currentPeriod }) {
+  const totalProducts = products.length;
+  const totalStockValue = products.reduce((s, p) => s + p.stock * (p.cost || 0), 0);
+  const lowStock = products.filter(p => p.stock <= p.minStock);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const itemsIssuedToday = movements.filter(m => new Date(m.createdAt) >= today && m.type === 'ISSUE')
+    .reduce((s, m) => s + Math.abs(m.quantity), 0);
+  // Only show current period movements as "recent"
+  const currentMvs = currentPeriod ? movements.filter(m => m.periodId === currentPeriod.id) : movements;
+  const recent = currentMvs.slice(0, 10);
+  const empById = Object.fromEntries(employees.map(e => [e.id, e]));
+  const prodById = Object.fromEntries(products.map(p => [p.id, p]));
+
+  return (
+    <div className="p-6">
+      <h2 className="text-2xl font-bold mb-1">Dashboard</h2>
+      {currentPeriod && <p className="text-sm text-zinc-500 mb-6">Current period: <span className="text-amber-400 font-medium">{currentPeriod.label}</span> · started {fmtDate(currentPeriod.startedAt)}</p>}
+
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        <StatCard label="Total Products" value={totalProducts} icon={Package} />
+        <StatCard label="Stock Value" value={`R ${totalStockValue.toLocaleString('en-ZA', { maximumFractionDigits: 0 })}`} icon={BarChart3} />
+        <StatCard label="Items Issued Today" value={itemsIssuedToday} icon={ScanLine} />
+        <StatCard label="Low Stock Items" value={lowStock.length} icon={AlertTriangle} accent={lowStock.length > 0 ? 'amber' : null} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+            <h3 className="font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-500" /> Low Stock Alerts</h3>
+            <span className="text-xs text-zinc-500">{lowStock.length} items</span>
+          </div>
+          <div className="max-h-96 overflow-auto">
+            {lowStock.length === 0 ? (
+              <div className="p-8 text-center text-zinc-500 text-sm">All stock levels healthy ✓</div>
+            ) : (
+              <table className="w-full text-sm">
+                <tbody>
+                  {lowStock.map(p => (
+                    <tr key={p.id} className="border-t border-zinc-800">
+                      <td className="px-4 py-2">
+                        <div className="font-medium">{p.name}</div>
+                        <div className="text-xs text-zinc-500 font-mono">{p.sku}</div>
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <div className={`font-bold ${p.stock === 0 ? 'text-red-400' : 'text-amber-400'}`}>{p.stock}</div>
+                        <div className="text-xs text-zinc-500">min {p.minStock}</div>
+                      </td>
+                      <td className="px-4 py-2 text-right text-xs text-zinc-400">Reorder {p.reorderQty}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800">
+            <h3 className="font-semibold flex items-center gap-2"><History className="w-4 h-4" /> Recent Activity (this period)</h3>
+          </div>
+          <div className="max-h-96 overflow-auto">
+            {recent.length === 0 ? (
+              <div className="p-8 text-center text-zinc-500 text-sm">No movements yet this period</div>
+            ) : (
+              <ul className="divide-y divide-zinc-800">
+                {recent.map(m => {
+                  const p = prodById[m.productId];
+                  const e = empById[m.employeeId];
+                  return (
+                    <li key={m.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                      <div>
+                        <div className="font-medium">{p?.name || 'Unknown'}</div>
+                        <div className="text-xs text-zinc-500">{e?.name || 'System'} · {fmtDateTime(m.createdAt)}</div>
+                      </div>
+                      <div className={`font-bold ${m.quantity < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {m.quantity > 0 ? '+' : ''}{m.quantity}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon: Icon, accent }) {
+  const accentClasses = accent === 'amber' ? 'border-amber-500/40 bg-amber-500/5' : 'border-zinc-800 bg-zinc-900';
+  return (
+    <div className={`border ${accentClasses} rounded-lg p-4`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-zinc-500 uppercase tracking-wide">{label}</div>
+        <Icon className={`w-4 h-4 ${accent === 'amber' ? 'text-amber-500' : 'text-zinc-600'}`} />
+      </div>
+      <div className="text-2xl font-bold">{value}</div>
+    </div>
+  );
+}
+
+// ============================================================
+// PRODUCTS (mostly unchanged from v3)
+// ============================================================
+function ProductsScreen({ products, barcodes, beeper, refresh }) {
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [receiving, setReceiving] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return products.filter(p =>
+      p.name.toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q)
+    );
+  }, [products, search]);
+
+  const saveProduct = async (data) => {
+    try {
+      if (data.id) {
+        await apiPut(`/products/${data.id}`, data);
+      } else {
+        const newProd = { ...data, id: uid(), stock: Number(data.stock) || 0, active: true };
+        await apiPost('/products', newProd);
+        if (data._barcode) await apiPost('/barcodes', { value: data._barcode, productId: newProd.id, employeeId: null });
+      }
+      setEditing(null);
+      await refresh();
+    } catch (err) { alert('Save failed: ' + err.message); }
+  };
+
+  const addBarcode = async (productId, value) => {
+    if (!value.trim()) return;
+    try { await apiPost('/barcodes', { value, productId, employeeId: null }); await refresh(); }
+    catch (err) { alert(err.message); }
+  };
+
+  const removeBarcode = async (value) => {
+    await apiDelete(`/barcodes/${encodeURIComponent(value)}`);
+    await refresh();
+  };
+
+  const receiveStock = async (productId, qty, notes) => {
+    if (qty <= 0) return;
+    try {
+      await apiPost('/receive', { productId, qty, notes });
+      beeper.confirm();
+      setReceiving(null);
+      await refresh();
+    } catch (err) { alert(err.message); }
+  };
+
+  const deleteProduct = async (product) => {
+    await apiDelete(`/products/${product.id}`);
+    setDeleting(null);
+    await refresh();
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Products</h2>
+        <button onClick={() => setEditing('new')}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+          <Plus className="w-4 h-4" /> New Product
+        </button>
+      </div>
+      <div className="relative mb-4">
+        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name, SKU, or category…"
+          className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-10 pr-4 py-2.5 focus:outline-none focus:border-amber-500" />
+      </div>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {products.length === 0 ? (
+          <div className="p-12 text-center">
+            <Package className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+            <div className="text-zinc-400 font-medium mb-1">No products yet</div>
+            <div className="text-zinc-600 text-sm">Click "New Product" to add your first item</div>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-3">Product</th>
+                <th className="text-left px-4 py-3">SKU</th>
+                <th className="text-left px-4 py-3">Category</th>
+                <th className="text-right px-4 py-3">Stock</th>
+                <th className="text-right px-4 py-3">Min</th>
+                <th className="text-left px-4 py-3">Location</th>
+                <th className="text-left px-4 py-3">Barcodes</th>
+                <th className="w-44"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p => {
+                const bcs = barcodes.filter(b => b.productId === p.id);
+                const low = p.stock <= p.minStock;
+                return (
+                  <tr key={p.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                    <td className="px-4 py-3 font-medium">{p.name}</td>
+                    <td className="px-4 py-3 text-zinc-500 font-mono text-xs">{p.sku}</td>
+                    <td className="px-4 py-3 text-zinc-400 text-sm">{p.category}</td>
+                    <td className={`px-4 py-3 text-right font-bold ${low ? 'text-amber-400' : ''}`}>{p.stock}</td>
+                    <td className="px-4 py-3 text-right text-zinc-500 text-sm">{p.minStock}</td>
+                    <td className="px-4 py-3 text-zinc-400 text-sm">{p.location}</td>
+                    <td className="px-4 py-3 text-xs text-zinc-500 font-mono">
+                      {bcs.length === 0 ? <span className="text-red-400">none</span> : `${bcs.length} barcode${bcs.length>1?'s':''}`}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1 justify-end items-center">
+                        <button onClick={() => setReceiving(p.id)}
+                          className="text-xs bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 px-2 py-1 rounded">+Stock</button>
+                        <button onClick={() => setEditing(p)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                        <button onClick={() => setDeleting(p)} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+        {products.length > 0 && filtered.length === 0 && (
+          <div className="p-8 text-center text-zinc-500 text-sm">No products match</div>
+        )}
+      </div>
+      {editing && (
+        <ProductModal product={editing === 'new' ? null : editing}
+          barcodes={barcodes.filter(b => editing !== 'new' && b.productId === editing.id)}
+          onSave={saveProduct} onClose={() => setEditing(null)}
+          onAddBarcode={addBarcode} onRemoveBarcode={removeBarcode} />
+      )}
+      {receiving && <ReceiveStockModal product={products.find(p => p.id === receiving)} onSave={receiveStock} onClose={() => setReceiving(null)} />}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete "${deleting.name}"?`}
+          message="This permanently removes the product and all its barcodes. Past transaction history remains but will show this product as 'deleted product'. This cannot be undone."
+          confirmLabel="Delete Product"
+          onConfirm={() => deleteProduct(deleting)}
+          onCancel={() => setDeleting(null)} />
+      )}
+    </div>
+  );
+}
+
+function ProductModal({ product, barcodes, onSave, onClose, onAddBarcode, onRemoveBarcode }) {
+  const [form, setForm] = useState(product || { name: '', sku: '', category: '', location: '', supplier: '', cost: 0, stock: 0, minStock: 0, reorderQty: 0, active: true, _barcode: '' });
+  const [newBc, setNewBc] = useState('');
+  const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-2xl max-h-[90vh] overflow-auto">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">{product ? 'Edit Product' : 'New Product'}</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 grid grid-cols-2 gap-4">
+          <Field label="Name *" className="col-span-2"><input value={form.name} onChange={e => upd('name', e.target.value)} className="input" /></Field>
+          <Field label="SKU"><input value={form.sku} onChange={e => upd('sku', e.target.value)} className="input font-mono" /></Field>
+          <Field label="Category"><input value={form.category} onChange={e => upd('category', e.target.value)} className="input" /></Field>
+          <Field label="Location"><input value={form.location} onChange={e => upd('location', e.target.value)} className="input" /></Field>
+          <Field label="Supplier"><input value={form.supplier} onChange={e => upd('supplier', e.target.value)} className="input" /></Field>
+          <Field label="Cost (R)"><input type="number" step="0.01" value={form.cost} onChange={e => upd('cost', e.target.value)} className="input" /></Field>
+          <Field label={product ? "Current Stock (read-only)" : "Initial Stock"}>
+            <input type="number" value={form.stock} onChange={e => upd('stock', e.target.value)} className="input" disabled={!!product} />
+          </Field>
+          <Field label="Min Stock"><input type="number" value={form.minStock} onChange={e => upd('minStock', e.target.value)} className="input" /></Field>
+          <Field label="Reorder Qty"><input type="number" value={form.reorderQty} onChange={e => upd('reorderQty', e.target.value)} className="input" /></Field>
+          {!product && (
+            <Field label="Initial Barcode (optional)" className="col-span-2">
+              <input value={form._barcode || ''} onChange={e => upd('_barcode', e.target.value)} className="input font-mono" placeholder="Scan or type product barcode" />
+            </Field>
+          )}
+          {product && (
+            <div className="col-span-2 border-t border-zinc-800 pt-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Barcodes</div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {barcodes.length === 0 ? <div className="text-sm text-zinc-500">No barcodes yet</div> : barcodes.map(b => (
+                  <div key={b.value} className="flex items-center gap-1 bg-zinc-800 text-sm font-mono px-2 py-1 rounded">
+                    {b.value}
+                    <button onClick={() => onRemoveBarcode(b.value)} className="text-zinc-500 hover:text-red-400"><X className="w-3 h-3" /></button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input value={newBc} onChange={e => setNewBc(e.target.value)} className="input font-mono" placeholder="Scan or type new barcode" />
+                <button onClick={() => { onAddBarcode(product.id, newBc); setNewBc(''); }}
+                  className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md whitespace-nowrap text-sm">Add Barcode</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={() => form.name.trim() && onSave(form)}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold rounded-md">
+            {product ? 'Save Changes' : 'Create Product'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReceiveStockModal({ product, onSave, onClose }) {
+  const [qty, setQty] = useState(0);
+  const [notes, setNotes] = useState('');
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">Receive Stock</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <div className="font-semibold">{product.name}</div>
+            <div className="text-xs text-zinc-500">{product.sku} · Current stock: {product.stock}</div>
+          </div>
+          <Field label="Quantity Received"><input type="number" value={qty} onChange={e => setQty(Number(e.target.value))} className="input" autoFocus /></Field>
+          <Field label="Notes (optional)"><input value={notes} onChange={e => setNotes(e.target.value)} className="input" placeholder="PO number, supplier ref, etc." /></Field>
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={() => onSave(product.id, qty, notes)} disabled={qty <= 0}
+            className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-900 font-semibold rounded-md">
+            Receive {qty > 0 ? `+${qty}` : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// OPERATORS (unchanged)
+// ============================================================
+function EmployeesScreen({ employees, barcodes, movements, refresh }) {
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+
+  const saveEmployee = async (data) => {
+    try {
+      if (data.id) {
+        await apiPut(`/employees/${data.id}`, data);
+      } else {
+        const newEmp = { ...data, id: uid(), active: true };
+        await apiPost('/employees', newEmp);
+        if (data.code) await apiPost('/barcodes', { value: data.code, productId: null, employeeId: newEmp.id });
+      }
+      setEditing(null);
+      await refresh();
+    } catch (err) { alert('Save failed: ' + err.message); }
+  };
+
+  const deleteEmployee = async (emp) => {
+    await apiDelete(`/employees/${emp.id}`);
+    setDeleting(null);
+    await refresh();
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold">Operators</h2>
+          <p className="text-sm text-zinc-500 mt-1">Workshop staff who scan their badge to take stock. They don't log in to this system.</p>
+        </div>
+        <button onClick={() => setEditing('new')}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+          <Plus className="w-4 h-4" /> New Operator
+        </button>
+      </div>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {employees.length === 0 ? (
+          <div className="p-12 text-center">
+            <Users className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+            <div className="text-zinc-400 font-medium mb-1">No operators yet</div>
+            <div className="text-zinc-600 text-sm">Click "New Operator" to add your first one</div>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-3">Name</th>
+                <th className="text-left px-4 py-3">Code / Badge</th>
+                <th className="text-left px-4 py-3">Role</th>
+                <th className="text-left px-4 py-3">Status</th>
+                <th className="w-32"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map(e => {
+                const hasHistory = movements.some(m => m.employeeId === e.id);
+                return (
+                  <tr key={e.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                    <td className="px-4 py-3 font-medium">{e.name}</td>
+                    <td className="px-4 py-3 font-mono text-sm text-zinc-400">{e.code}</td>
+                    <td className="px-4 py-3 text-sm text-zinc-400 capitalize">{e.role}</td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-0.5 rounded ${e.active ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-700 text-zinc-400'}`}>
+                        {e.active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1 justify-end">
+                        <button onClick={() => setEditing(e)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                        <button onClick={() => setDeleting({ emp: e, hasHistory })} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {editing && <EmployeeModal employee={editing === 'new' ? null : editing} onSave={saveEmployee} onClose={() => setEditing(null)} />}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete "${deleting.emp.name}"?`}
+          message={deleting.hasHistory
+            ? "This operator has transaction history. Deleting removes them and their badge code, but past transactions remain (shown as 'deleted operator'). Consider Deactivating instead."
+            : "This permanently removes the operator and their badge code. This cannot be undone."}
+          confirmLabel="Delete Operator"
+          onConfirm={() => deleteEmployee(deleting.emp)}
+          onCancel={() => setDeleting(null)} />
+      )}
+    </div>
+  );
+}
+
+function EmployeeModal({ employee, onSave, onClose }) {
+  const [form, setForm] = useState(employee || { name: '', code: '', role: 'operator', active: true });
+  const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">{employee ? 'Edit Operator' : 'New Operator'}</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <Field label="Full Name"><input value={form.name} onChange={e => upd('name', e.target.value)} className="input" /></Field>
+          <Field label="Operator Code (used as badge barcode)">
+            <input value={form.code} onChange={e => upd('code', e.target.value)} className="input font-mono" placeholder="e.g. EMP001 or 12345" />
+          </Field>
+          <Field label="Role">
+            <select value={form.role} onChange={e => upd('role', e.target.value)} className="input">
+              <option value="operator">Operator</option>
+              <option value="supervisor">Supervisor</option>
+              <option value="apprentice">Apprentice</option>
+            </select>
+          </Field>
+          {employee && (
+            <Field label="Status">
+              <select value={form.active ? 'active' : 'inactive'} onChange={e => upd('active', e.target.value === 'active')} className="input">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </Field>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={() => onSave(form)} className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold rounded-md">
+            {employee ? 'Save' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// HISTORY with period dropdown
+// ============================================================
+function HistoryScreen({ employees, periods, currentPeriod }) {
+  const [filterEmp, setFilterEmp] = useState('');
+  const [filterPeriod, setFilterPeriod] = useState(currentPeriod?.id || '');
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
+  const [data, setData] = useState([]);
+  const [expanded, setExpanded] = useState({});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (currentPeriod && !filterPeriod) setFilterPeriod(currentPeriod.id);
+  }, [currentPeriod, filterPeriod]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterEmp) params.set('employeeId', filterEmp);
+      if (filterPeriod) params.set('periodId', filterPeriod);
+      if (filterFrom) params.set('from', new Date(filterFrom).toISOString());
+      if (filterTo) {
+        const t = new Date(filterTo); t.setHours(23,59,59,999);
+        params.set('to', t.toISOString());
+      }
+      const result = await apiGet(`/history/detailed?${params.toString()}`);
+      setData(result);
+    } catch (err) { console.error(err); } finally { setLoading(false); }
+  }, [filterEmp, filterPeriod, filterFrom, filterTo]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggle = (id) => setExpanded(e => ({ ...e, [id]: !e[id] }));
+
+  const exportCSV = () => {
+    const rows = [['Date/Time', 'Period', 'Transaction ID', 'Operator', 'Operator Code', 'Product', 'SKU', 'Category', 'Quantity', 'Balance After', 'Notes']];
+    const periodLabel = periods.find(p => p.id === filterPeriod)?.label || 'All';
+    data.forEach(tx => {
+      tx.lines.forEach(l => {
+        rows.push([
+          fmtDateTime(tx.createdAt), periodLabel, tx.id, tx.employeeName || '(deleted)', tx.employeeCode || '',
+          l.productName || '(deleted)', l.productSku || '', l.productCategory || '',
+          Math.abs(l.quantity), l.balanceAfter, l.notes || ''
+        ]);
+      });
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `history-${periodLabel.replace(/\s+/g, '-')}-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const totalLines = data.reduce((s, tx) => s + tx.lines.length, 0);
+  const totalItems = data.reduce((s, tx) => s + tx.lines.reduce((ss, l) => ss + Math.abs(l.quantity), 0), 0);
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Transaction History</h2>
+        <button onClick={exportCSV} disabled={data.length === 0}
+          className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 px-4 py-2 rounded-md text-sm">
+          <Download className="w-4 h-4" /> Export Detailed CSV
+        </button>
+      </div>
+
+      <div className="flex gap-3 mb-4 items-end flex-wrap">
+        <Field label="Period">
+          <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)} className="input min-w-[200px]">
+            <option value="">All Periods</option>
+            {periods.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.label} {!p.closedAt ? '(current)' : '(closed)'}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Operator">
+          <select value={filterEmp} onChange={e => setFilterEmp(e.target.value)} className="input">
+            <option value="">All Operators</option>
+            {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Field>
+        <Field label="From"><input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} className="input" /></Field>
+        <Field label="To"><input type="date" value={filterTo} onChange={e => setFilterTo(e.target.value)} className="input" /></Field>
+        <button onClick={() => { setFilterEmp(''); setFilterPeriod(currentPeriod?.id || ''); setFilterFrom(''); setFilterTo(''); }}
+          className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md text-sm">Reset</button>
+        <div className="ml-auto text-sm text-zinc-500 self-center">
+          {data.length} transactions · {totalLines} lines · {totalItems} items total
+        </div>
+      </div>
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+        ) : data.length === 0 ? (
+          <div className="p-12 text-center text-zinc-500 text-sm">No transactions found</div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide bg-zinc-900">
+              <tr>
+                <th className="w-10"></th>
+                <th className="text-left px-4 py-3">Date/Time</th>
+                <th className="text-left px-4 py-3">Type</th>
+                <th className="text-left px-4 py-3">Operator</th>
+                <th className="text-right px-4 py-3">Distinct Items</th>
+                <th className="text-right px-4 py-3">Total Qty</th>
+                <th className="text-left px-4 py-3 pl-6">Transaction ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(tx => {
+                const totalQty = tx.lines.reduce((s, l) => s + Math.abs(l.quantity), 0);
+                const isOpen = expanded[tx.id];
+                return (
+                  <React.Fragment key={tx.id}>
+                    <tr className="border-t border-zinc-800 hover:bg-zinc-800/40 cursor-pointer" onClick={() => toggle(tx.id)}>
+                      <td className="px-2 py-2.5 text-center">
+                        {isOpen ? <ChevronDown className="w-4 h-4 inline text-zinc-500" /> : <ChevronRight className="w-4 h-4 inline text-zinc-500" />}
+                      </td>
+                      <td className="px-4 py-2.5 text-zinc-400 text-sm">{fmtDateTime(tx.createdAt)}</td>
+                      <td className="px-4 py-2.5"><span className="text-xs px-2 py-0.5 rounded bg-red-500/20 text-red-300">{tx.type}</span></td>
+                      <td className="px-4 py-2.5 font-medium">{tx.employeeName || <span className="text-zinc-600 italic">deleted operator</span>}</td>
+                      <td className="px-4 py-2.5 text-right text-zinc-400">{tx.lines.length}</td>
+                      <td className="px-4 py-2.5 text-right font-bold text-amber-400">{totalQty}</td>
+                      <td className="px-4 py-2.5 pl-6 font-mono text-xs text-zinc-500">{tx.id}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-zinc-950">
+                        <td></td>
+                        <td colSpan={6} className="px-4 py-3">
+                          <div className="border border-zinc-800 rounded-md overflow-hidden">
+                            <table className="w-full text-sm">
+                              <thead className="bg-zinc-900 text-xs text-zinc-500 uppercase">
+                                <tr>
+                                  <th className="text-left px-3 py-2">Product</th>
+                                  <th className="text-left px-3 py-2">SKU</th>
+                                  <th className="text-left px-3 py-2">Category</th>
+                                  <th className="text-right px-3 py-2">Quantity Taken</th>
+                                  <th className="text-right px-3 py-2">Stock After</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {tx.lines.map(l => (
+                                  <tr key={l.id} className="border-t border-zinc-800">
+                                    <td className="px-3 py-2 font-medium">{l.productName || <span className="text-zinc-600 italic">deleted product</span>}</td>
+                                    <td className="px-3 py-2 font-mono text-xs text-zinc-500">{l.productSku}</td>
+                                    <td className="px-3 py-2 text-zinc-400">{l.productCategory}</td>
+                                    <td className="px-3 py-2 text-right font-bold text-amber-400">{Math.abs(l.quantity)}</td>
+                                    <td className="px-3 py-2 text-right text-zinc-400">{l.balanceAfter}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// REPORTS - current period, with "Close Month" button
+// ============================================================
+function ReportsScreen({ products, movements, employees, currentPeriod, onMonthClosed }) {
+  const [closing, setClosing] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  // Filter movements to current period only
+  const periodMovements = useMemo(() =>
+    currentPeriod ? movements.filter(m => m.periodId === currentPeriod.id) : movements,
+    [movements, currentPeriod]);
+
+  const usageByProduct = useMemo(() => {
+    const map = {};
+    periodMovements.filter(m => m.type === 'ISSUE').forEach(m => {
+      map[m.productId] = (map[m.productId] || 0) + Math.abs(m.quantity);
+    });
+    return Object.entries(map)
+      .map(([pid, qty]) => ({ product: products.find(p => p.id === pid), qty }))
+      .filter(r => r.product).sort((a, b) => b.qty - a.qty);
+  }, [periodMovements, products]);
+
+  const usageByEmployee = useMemo(() => {
+    const map = {};
+    periodMovements.filter(m => m.type === 'ISSUE').forEach(m => {
+      const k = m.employeeId;
+      if (!map[k]) map[k] = { qty: 0, products: {} };
+      map[k].qty += Math.abs(m.quantity);
+      map[k].products[m.productId] = (map[k].products[m.productId] || 0) + Math.abs(m.quantity);
+    });
+    return Object.entries(map)
+      .map(([eid, info]) => ({ employee: employees.find(e => e.id === eid), qty: info.qty, products: info.products }))
+      .filter(r => r.employee).sort((a, b) => b.qty - a.qty);
+  }, [periodMovements, employees]);
+
+  const reorderList = products.filter(p => p.stock <= p.minStock);
+  const prodById = Object.fromEntries(products.map(p => [p.id, p]));
+
+  const exportCSV = (rows, filename) => {
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportReorder = () => {
+    const rows = [['SKU', 'Product', 'Current Stock', 'Min Stock', 'Reorder Qty', 'Supplier']];
+    reorderList.forEach(p => rows.push([p.sku, p.name, p.stock, p.minStock, p.reorderQty, p.supplier]));
+    exportCSV(rows, 'reorder-list.csv');
+  };
+
+  const exportEmployeeUsage = () => {
+    const rows = [['Period', 'Operator', 'Code', 'Product', 'SKU', 'Total Taken']];
+    usageByEmployee.forEach(r => {
+      Object.entries(r.products).forEach(([pid, qty]) => {
+        const p = prodById[pid];
+        rows.push([currentPeriod?.label || '', r.employee.name, r.employee.code, p?.name || '(deleted)', p?.sku || '', qty]);
+      });
+    });
+    exportCSV(rows, `operator-usage-${(currentPeriod?.label || '').replace(/\s+/g, '-')}.csv`);
+  };
+
+  const closeMonth = async () => {
+    setClosing(true);
+    try {
+      const r = await apiPost('/periods/close');
+      setMessage({ type: 'ok', text: `Period "${r.closed.label}" closed. New period "${r.new.label}" started.` });
+      setTimeout(() => setMessage(null), 5000);
+      setConfirmClose(false);
+      onMonthClosed && onMonthClosed();
+    } catch (err) {
+      setMessage({ type: 'err', text: err.message });
+      setTimeout(() => setMessage(null), 5000);
+    } finally { setClosing(false); }
+  };
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Reports</h2>
+          {currentPeriod && (
+            <p className="text-sm text-zinc-500 mt-1">
+              Current period: <span className="text-amber-400 font-medium">{currentPeriod.label}</span> · started {fmtDate(currentPeriod.startedAt)}
+            </p>
+          )}
+        </div>
+        <button onClick={() => setConfirmClose(true)} disabled={closing}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-bold px-4 py-2.5 rounded-md">
+          {closing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarCheck className="w-4 h-4" />}
+          Close Month
+        </button>
+      </div>
+
+      {message && (
+        <div className={`px-4 py-3 rounded-md text-sm ${
+          message.type === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border border-red-500/30 text-red-300'
+        }`}>{message.text}</div>
+      )}
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="font-semibold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500" /> Reorder Required (live stock)
+          </h3>
+          <button onClick={exportReorder} disabled={reorderList.length === 0}
+            className="text-xs bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 px-3 py-1.5 rounded flex items-center gap-1.5">
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </button>
+        </div>
+        {reorderList.length === 0 ? (
+          <div className="p-8 text-center text-zinc-500 text-sm">No items need reordering ✓</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-2">Product</th>
+                <th className="text-left px-4 py-2">Supplier</th>
+                <th className="text-right px-4 py-2">Current</th>
+                <th className="text-right px-4 py-2">Min</th>
+                <th className="text-right px-4 py-2">Reorder Qty</th>
+                <th className="text-right px-4 py-2">Est. Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reorderList.map(p => (
+                <tr key={p.id} className="border-t border-zinc-800">
+                  <td className="px-4 py-2">
+                    <div className="font-medium">{p.name}</div>
+                    <div className="text-xs text-zinc-500 font-mono">{p.sku}</div>
+                  </td>
+                  <td className="px-4 py-2 text-zinc-400">{p.supplier}</td>
+                  <td className={`px-4 py-2 text-right font-bold ${p.stock === 0 ? 'text-red-400' : 'text-amber-400'}`}>{p.stock}</td>
+                  <td className="px-4 py-2 text-right text-zinc-400">{p.minStock}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{p.reorderQty}</td>
+                  <td className="px-4 py-2 text-right text-zinc-400">R {(p.reorderQty * (p.cost || 0)).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800">
+            <h3 className="font-semibold">Top Products (this period)</h3>
+          </div>
+          {usageByProduct.length === 0 ? (
+            <div className="p-8 text-center text-zinc-500 text-sm">No usage this period</div>
+          ) : (
+            <div className="p-4 space-y-2">
+              {usageByProduct.slice(0, 10).map(r => {
+                const max = usageByProduct[0].qty;
+                const pct = (r.qty / max) * 100;
+                return (
+                  <div key={r.product.id}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="font-medium">{r.product.name}</span>
+                      <span className="text-zinc-400">{r.qty}</span>
+                    </div>
+                    <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div className="h-full bg-amber-500" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+            <h3 className="font-semibold">Usage by Operator (this period)</h3>
+            <button onClick={exportEmployeeUsage} disabled={usageByEmployee.length === 0}
+              className="text-xs bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 px-3 py-1.5 rounded flex items-center gap-1.5">
+              <Download className="w-3.5 h-3.5" /> CSV
+            </button>
+          </div>
+          {usageByEmployee.length === 0 ? (
+            <div className="p-8 text-center text-zinc-500 text-sm">No usage this period</div>
+          ) : (
+            <div className="p-4 space-y-3 max-h-96 overflow-auto">
+              {usageByEmployee.map(r => {
+                const max = usageByEmployee[0].qty;
+                const pct = (r.qty / max) * 100;
+                const productList = Object.entries(r.products)
+                  .map(([pid, qty]) => ({ p: prodById[pid], qty }))
+                  .filter(x => x.p).sort((a, b) => b.qty - a.qty);
+                return (
+                  <div key={r.employee.id} className="border-b border-zinc-800 pb-2 last:border-b-0">
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="font-medium">{r.employee.name}</span>
+                      <span className="text-zinc-400">{r.qty} items</span>
+                    </div>
+                    <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden mb-2">
+                      <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="text-xs text-zinc-500 space-y-0.5 pl-2">
+                      {productList.slice(0, 5).map(x => (
+                        <div key={x.p.id} className="flex justify-between">
+                          <span>· {x.p.name}</span>
+                          <span className="font-mono">×{x.qty}</span>
+                        </div>
+                      ))}
+                      {productList.length > 5 && (
+                        <div className="text-zinc-600 italic">+ {productList.length - 5} more products…</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {confirmClose && (
+        <ConfirmDialog
+          title="Close the current period?"
+          message={`This will close "${currentPeriod?.label}" and start a new period. Your stock levels stay the same. All current transactions move into the archived monthly report (accessible from "Monthly Reports"). Continue?`}
+          confirmLabel="Yes, Close Month"
+          confirmClass="bg-amber-500 hover:bg-amber-400 text-zinc-900"
+          onConfirm={closeMonth}
+          onCancel={() => setConfirmClose(false)} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// MONTHLY REPORTS - list of all archived periods
+// ============================================================
+function MonthlyReportsScreen({ periods, employees, products }) {
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const closedPeriods = periods.filter(p => p.closedAt);
+  const openPeriod = periods.find(p => !p.closedAt);
+
+  useEffect(() => {
+    if (!selected) { setDetail(null); return; }
+    setLoading(true);
+    Promise.all([
+      apiGet(`/transactions?periodId=${selected.id}`),
+      apiGet(`/movements?periodId=${selected.id}`),
+    ]).then(([txs, mvs]) => {
+      setDetail({ transactions: txs, movements: mvs });
+    }).catch(err => console.error(err)).finally(() => setLoading(false));
+  }, [selected]);
+
+  const prodById = Object.fromEntries(products.map(p => [p.id, p]));
+  const empById = Object.fromEntries(employees.map(e => [e.id, e]));
+
+  const stats = useMemo(() => {
+    if (!detail) return null;
+    const issues = detail.movements.filter(m => m.type === 'ISSUE');
+    const byProduct = {};
+    const byOperator = {};
+    issues.forEach(m => {
+      byProduct[m.productId] = (byProduct[m.productId] || 0) + Math.abs(m.quantity);
+      if (m.employeeId) byOperator[m.employeeId] = (byOperator[m.employeeId] || 0) + Math.abs(m.quantity);
+    });
+    return {
+      txCount: detail.transactions.length,
+      itemCount: issues.reduce((s, m) => s + Math.abs(m.quantity), 0),
+      topProducts: Object.entries(byProduct).map(([pid, qty]) => ({ p: prodById[pid], qty })).filter(x => x.p).sort((a, b) => b.qty - a.qty),
+      topOperators: Object.entries(byOperator).map(([eid, qty]) => ({ e: empById[eid], qty })).filter(x => x.e).sort((a, b) => b.qty - a.qty),
+    };
+  }, [detail, prodById, empById]);
+
+  const exportMonth = () => {
+    if (!detail || !selected) return;
+    const rows = [['Date/Time', 'Transaction ID', 'Operator', 'Operator Code', 'Product', 'SKU', 'Quantity', 'Balance After']];
+    detail.movements.forEach(m => {
+      const tx = detail.transactions.find(t => t.id === m.transactionId);
+      const e = empById[m.employeeId];
+      const p = prodById[m.productId];
+      rows.push([
+        fmtDateTime(m.createdAt), m.transactionId, e?.name || '(deleted)', e?.code || '',
+        p?.name || '(deleted)', p?.sku || '', Math.abs(m.quantity), m.balanceAfter
+      ]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `report-${selected.label.replace(/\s+/g, '-')}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (selected) {
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <button onClick={() => setSelected(null)} className="text-sm text-zinc-400 hover:text-white mb-2 flex items-center gap-1">
+              ← Back to all months
+            </button>
+            <h2 className="text-2xl font-bold flex items-center gap-2">
+              <Archive className="w-6 h-6 text-amber-500" /> {selected.label}
+            </h2>
+            <p className="text-sm text-zinc-500 mt-1">
+              {fmtDate(selected.startedAt)} → {selected.closedAt ? fmtDate(selected.closedAt) : 'current'}
+              {selected.autoClosed ? ' · auto-closed' : selected.closedAt ? ' · manually closed' : ''}
+            </p>
+          </div>
+          <button onClick={exportMonth} disabled={!detail}
+            className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 px-4 py-2 rounded-md text-sm">
+            <Download className="w-4 h-4" /> Export Full CSV
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+        ) : !stats ? null : (
+          <>
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <StatCard label="Transactions" value={stats.txCount} icon={History} />
+              <StatCard label="Total Items Issued" value={stats.itemCount} icon={ScanLine} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+                <div className="px-4 py-3 border-b border-zinc-800"><h3 className="font-semibold">Products Issued</h3></div>
+                {stats.topProducts.length === 0 ? (
+                  <div className="p-8 text-center text-zinc-500 text-sm">No activity</div>
+                ) : (
+                  <div className="max-h-96 overflow-auto">
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {stats.topProducts.map(x => (
+                          <tr key={x.p.id} className="border-t border-zinc-800">
+                            <td className="px-4 py-2">
+                              <div className="font-medium">{x.p.name}</div>
+                              <div className="text-xs text-zinc-500 font-mono">{x.p.sku}</div>
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-amber-400">{x.qty}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+                <div className="px-4 py-3 border-b border-zinc-800"><h3 className="font-semibold">Operator Activity</h3></div>
+                {stats.topOperators.length === 0 ? (
+                  <div className="p-8 text-center text-zinc-500 text-sm">No activity</div>
+                ) : (
+                  <div className="max-h-96 overflow-auto">
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {stats.topOperators.map(x => (
+                          <tr key={x.e.id} className="border-t border-zinc-800">
+                            <td className="px-4 py-2">
+                              <div className="font-medium">{x.e.name}</div>
+                              <div className="text-xs text-zinc-500 font-mono">{x.e.code}</div>
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-emerald-400">{x.qty}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6">
+      <h2 className="text-2xl font-bold mb-1">Monthly Reports</h2>
+      <p className="text-sm text-zinc-500 mb-6">Archived monthly periods. Click one to see its full report.</p>
+
+      {openPeriod && (
+        <div className="bg-amber-500/5 border border-amber-500/30 rounded-lg p-4 mb-4 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-amber-400 uppercase tracking-wide mb-1">Current open period</div>
+            <div className="font-bold">{openPeriod.label}</div>
+            <div className="text-xs text-zinc-500">Started {fmtDate(openPeriod.startedAt)}</div>
+          </div>
+          <div className="text-xs text-zinc-500 text-right">
+            Will be archived when you click "Close Month"<br />in Reports, or automatically on the 1st.
+          </div>
+        </div>
+      )}
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {closedPeriods.length === 0 ? (
+          <div className="p-12 text-center">
+            <Archive className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+            <div className="text-zinc-400 font-medium mb-1">No archived months yet</div>
+            <div className="text-zinc-600 text-sm">Close a month to archive it here</div>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-3">Period</th>
+                <th className="text-left px-4 py-3">Started</th>
+                <th className="text-left px-4 py-3">Closed</th>
+                <th className="text-right px-4 py-3">Transactions</th>
+                <th className="text-right px-4 py-3">Items Issued</th>
+                <th className="text-left px-4 py-3">Closed By</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {closedPeriods.map(p => (
+                <tr key={p.id} className="border-t border-zinc-800 hover:bg-zinc-800/40 cursor-pointer" onClick={() => setSelected(p)}>
+                  <td className="px-4 py-3 font-medium">{p.label}</td>
+                  <td className="px-4 py-3 text-sm text-zinc-400">{fmtDate(p.startedAt)}</td>
+                  <td className="px-4 py-3 text-sm text-zinc-400">{fmtDate(p.closedAt)}</td>
+                  <td className="px-4 py-3 text-right font-semibold">{p.txCount}</td>
+                  <td className="px-4 py-3 text-right font-bold text-amber-400">{p.itemCount}</td>
+                  <td className="px-4 py-3 text-xs text-zinc-500">
+                    {p.autoClosed ? <span className="text-zinc-400">auto</span> : 'manual'}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <ChevronRight className="w-4 h-4 inline text-zinc-500" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// USERS SCREEN (unchanged)
+// ============================================================
+function UsersScreen({ currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [changingPw, setChangingPw] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [message, setMessage] = useState(null);
+
+  const load = async () => {
+    try { setUsers(await apiGet('/users')); } catch (err) { console.error(err); } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const showMsg = (type, text) => { setMessage({ type, text }); setTimeout(() => setMessage(null), 4000); };
+
+  const createUser = async (username, password) => {
+    try { await apiPost('/users', { username, password }); showMsg('ok', `Admin "${username}" created`); setAdding(false); await load(); }
+    catch (err) { showMsg('err', err.message); throw err; }
+  };
+  const changePassword = async (userId, newPassword, currentPassword) => {
+    try { await apiPost(`/users/${userId}/password`, { newPassword, currentPassword }); showMsg('ok', 'Password updated'); setChangingPw(null); }
+    catch (err) { showMsg('err', err.message); throw err; }
+  };
+  const deleteUser = async () => {
+    try { await apiDelete(`/users/${deleting.id}`); showMsg('ok', `Admin "${deleting.username}" deleted`); setDeleting(null); await load(); }
+    catch (err) { showMsg('err', err.message); setDeleting(null); }
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-2xl font-bold">Admin Users</h2>
+          <p className="text-sm text-zinc-500 mt-1">People who can log in and manage this system. Not the same as workshop operators.</p>
+        </div>
+        <button onClick={() => setAdding(true)}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+          <Plus className="w-4 h-4" /> New Admin
+        </button>
+      </div>
+      {message && (
+        <div className={`mb-4 px-4 py-3 rounded-md text-sm ${
+          message.type === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border border-red-500/30 text-red-300'
+        }`}>{message.text}</div>
+      )}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-3">Username</th>
+                <th className="text-left px-4 py-3">Created</th>
+                <th className="text-left px-4 py-3">Last Login</th>
+                <th className="w-44"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <UserCog className="w-4 h-4 text-amber-500" />
+                      <span className="font-medium">{u.username}</span>
+                      {u.id === currentUser.id && <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">you</span>}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-zinc-400">{fmtDateTime(u.createdAt)}</td>
+                  <td className="px-4 py-3 text-sm text-zinc-400">{fmtDateTime(u.lastLoginAt)}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-1 justify-end items-center">
+                      <button onClick={() => setChangingPw(u)}
+                        className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded flex items-center gap-1">
+                        <KeyRound className="w-3.5 h-3.5" />
+                        {u.id === currentUser.id ? 'Change Password' : 'Reset Password'}
+                      </button>
+                      {u.id !== currentUser.id && (
+                        <button onClick={() => setDeleting(u)} className="text-zinc-400 hover:text-red-400 p-1">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {adding && <AddAdminModal onSave={createUser} onClose={() => setAdding(false)} />}
+      {changingPw && <ChangePasswordModal user={changingPw} isSelf={changingPw.id === currentUser.id} onSave={changePassword} onClose={() => setChangingPw(null)} />}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete admin "${deleting.username}"?`}
+          message="This user will no longer be able to log in. Any current sessions for them will end immediately."
+          confirmLabel="Delete Admin"
+          onConfirm={deleteUser}
+          onCancel={() => setDeleting(null)} />
+      )}
+    </div>
+  );
+}
+
+function AddAdminModal({ onSave, onClose }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr(null);
+    if (!username.trim() || username.length < 3) return setErr('Username must be at least 3 characters');
+    if (password.length < 6) return setErr('Password must be at least 6 characters');
+    if (password !== confirm) return setErr('Passwords do not match');
+    setBusy(true);
+    try { await onSave(username.trim(), password); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">New Admin User</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <Field label="Username"><input value={username} onChange={e => setUsername(e.target.value)} className="input" autoFocus /></Field>
+          <Field label="Password (min 6 characters)">
+            <div className="relative">
+              <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} className="input pr-10" />
+              <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </Field>
+          <Field label="Confirm Password">
+            <input type={showPw ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} className="input" />
+          </Field>
+          {err && <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-3 py-2 rounded-md text-sm">{err}</div>}
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-semibold rounded-md flex items-center gap-2">
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />} Create Admin
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ user, isSelf, onSave, onClose }) {
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr(null);
+    if (isSelf && !currentPw) return setErr('Current password is required');
+    if (newPw.length < 6) return setErr('New password must be at least 6 characters');
+    if (newPw !== confirm) return setErr('Passwords do not match');
+    setBusy(true);
+    try { await onSave(user.id, newPw, isSelf ? currentPw : undefined); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">{isSelf ? 'Change Your Password' : `Reset Password for "${user.username}"`}</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          {!isSelf && (
+            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3 py-2 rounded-md text-sm">
+              Their active sessions will be ended. They'll need to log in again with the new password.
+            </div>
+          )}
+          {isSelf && (
+            <Field label="Current Password">
+              <input type={showPw ? 'text' : 'password'} value={currentPw} onChange={e => setCurrentPw(e.target.value)} className="input" autoFocus />
+            </Field>
+          )}
+          <Field label="New Password (min 6 characters)">
+            <div className="relative">
+              <input type={showPw ? 'text' : 'password'} value={newPw} onChange={e => setNewPw(e.target.value)} className="input pr-10" autoFocus={!isSelf} />
+              <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </Field>
+          <Field label="Confirm New Password">
+            <input type={showPw ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} className="input" />
+          </Field>
+          {err && <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-3 py-2 rounded-md text-sm">{err}</div>}
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={submit} disabled={busy}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-semibold rounded-md flex items-center gap-2">
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />} {isSelf ? 'Update Password' : 'Reset Password'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SETTINGS - branding+logo, backup/restore, danger zone
+// ============================================================
+function SettingsScreen({ refresh, branding, refreshBranding }) {
+  const [confirm, setConfirm] = useState(null);
+  const [backups, setBackups] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+  const fileRef = useRef(null);
+  const logoRef = useRef(null);
+
+  const [name, setName] = useState(branding.systemName);
+  const [subtitle, setSubtitle] = useState(branding.systemSubtitle);
+
+  useEffect(() => { setName(branding.systemName); setSubtitle(branding.systemSubtitle); }, [branding.systemName, branding.systemSubtitle]);
+
+  const loadBackups = async () => {
+    try { setBackups(await apiGet('/backups/list')); } catch (err) { console.error(err); }
+  };
+  useEffect(() => { loadBackups(); }, []);
+
+  const showMsg = (type, text) => { setMessage({ type, text }); setTimeout(() => setMessage(null), 4000); };
+
+  const saveBranding = async () => {
+    setBusy(true);
+    try {
+      await apiPut('/system', { systemName: name, systemSubtitle: subtitle });
+      await refreshBranding();
+      showMsg('ok', 'Branding updated');
+    } catch (err) { showMsg('err', err.message); } finally { setBusy(false); }
+  };
+
+  const uploadLogo = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showMsg('err', 'Please upload an image file'); return; }
+    if (file.size > 2 * 1024 * 1024) { showMsg('err', 'Logo must be under 2 MB'); return; }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('logo', file);
+      const r = await fetch('/api/system/logo', {
+        method: 'POST', headers: { Authorization: `Bearer ${getToken()}` }, body: fd,
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Upload failed');
+      await refreshBranding();
+      showMsg('ok', 'Logo uploaded');
+    } catch (err) { showMsg('err', err.message); } finally { setBusy(false); if (logoRef.current) logoRef.current.value = ''; }
+  };
+
+  const removeLogo = async () => {
+    try { await apiDelete('/system/logo'); await refreshBranding(); showMsg('ok', 'Logo removed'); }
+    catch (err) { showMsg('err', err.message); }
+  };
+
+  const downloadBackup = async () => {
+    try {
+      const r = await fetch('/api/backup', { headers: { Authorization: `Bearer ${getToken()}` } });
+      if (!r.ok) throw new Error('Download failed');
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const filename = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'everton-backup.json';
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { showMsg('err', err.message); }
+  };
+
+  const snapshotNow = async () => {
+    setBusy(true);
+    try { const r = await apiPost('/backups/snapshot'); showMsg('ok', `Saved: ${r.filename}`); await loadBackups(); }
+    catch (err) { showMsg('err', err.message); } finally { setBusy(false); }
+  };
+
+  const handleRestore = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('backup', file);
+      const r = await fetch('/api/restore', { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` }, body: fd });
+      const result = await r.json();
+      if (!r.ok) throw new Error(result.error || 'Restore failed');
+      showMsg('ok', `Restored ${result.restored.products} products and ${result.restored.employees} operators`);
+      await refresh();
+      await refreshBranding();
+      await loadBackups();
+    } catch (err) { showMsg('err', err.message); }
+    finally { setBusy(false); setConfirm(null); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const clearAll = async () => { await apiPost('/clear/all'); setConfirm(null); await refresh(); showMsg('ok', 'Everything cleared'); };
+  const clearHistory = async () => { await apiPost('/clear/history'); setConfirm(null); await refresh(); showMsg('ok', 'History cleared'); };
+
+  return (
+    <div className="p-6 space-y-6">
+      <h2 className="text-2xl font-bold">Settings</h2>
+
+      {message && (
+        <div className={`px-4 py-3 rounded-md text-sm ${
+          message.type === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border border-red-500/30 text-red-300'
+        }`}>{message.text}</div>
+      )}
+
+      {/* Branding */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
+        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+          <Image className="w-5 h-5 text-amber-400" /> Branding
+        </h3>
+        <p className="text-sm text-zinc-400 mb-5">Customize the company name, subtitle, and logo shown across the app.</p>
+
+        <div className="grid grid-cols-3 gap-6">
+          <div className="col-span-2 space-y-4">
+            <Field label="System Name">
+              <input value={name} onChange={e => setName(e.target.value)} className="input" placeholder="EVERTON ENGINEERING" />
+            </Field>
+            <Field label="Subtitle">
+              <input value={subtitle} onChange={e => setSubtitle(e.target.value)} className="input" placeholder="Tooling Stock Management" />
+            </Field>
+            <button onClick={saveBranding} disabled={busy}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-semibold rounded-md">
+              Save Name & Subtitle
+            </button>
+          </div>
+
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Logo</div>
+            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4 flex items-center justify-center mb-3" style={{ height: 140 }}>
+              {branding.hasLogo ? (
+                <img src={`/api/branding/logo?v=${branding.logoVersion}`} alt="Logo" className="max-w-full max-h-full object-contain" />
+              ) : (
+                <div className="text-zinc-600 text-sm">No logo</div>
+              )}
+            </div>
+            <input ref={logoRef} type="file" accept="image/*" onChange={uploadLogo} className="hidden" />
+            <div className="flex gap-2">
+              <button onClick={() => logoRef.current?.click()} disabled={busy}
+                className="flex-1 text-sm bg-zinc-800 hover:bg-zinc-700 px-3 py-2 rounded">
+                {branding.hasLogo ? 'Replace' : 'Upload'}
+              </button>
+              {branding.hasLogo && (
+                <button onClick={removeLogo} disabled={busy}
+                  className="text-sm bg-red-500/20 hover:bg-red-500/30 text-red-300 px-3 py-2 rounded">
+                  Remove
+                </button>
+              )}
+            </div>
+            <div className="text-xs text-zinc-600 mt-2">Max 2 MB. PNG with transparent background works best.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Backup & Restore */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
+        <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <Save className="w-5 h-5 text-emerald-400" /> Backup & Restore
+        </h3>
+        <p className="text-sm text-zinc-400 mb-4">
+          The server auto-saves a snapshot every 6 hours (last 30 kept). You can also download a backup file now,
+          or upload an old backup to restore everything. A safety snapshot is taken before any restore.
+        </p>
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <button onClick={downloadBackup} disabled={busy}
+            className="flex items-center justify-center gap-2 p-4 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded-md font-medium">
+            <Download className="w-5 h-5" /> Download Backup File
+          </button>
+          <button onClick={() => setConfirm('restore')} disabled={busy}
+            className="flex items-center justify-center gap-2 p-4 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-md font-medium">
+            <Upload className="w-5 h-5" /> Restore from File
+          </button>
+        </div>
+        <input ref={fileRef} type="file" accept=".json" onChange={handleRestore} className="hidden" />
+
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-medium text-zinc-300">Server-side Backups</div>
+          <button onClick={snapshotNow} disabled={busy}
+            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded flex items-center gap-1.5">
+            <Save className="w-3.5 h-3.5" /> Snapshot Now
+          </button>
+        </div>
+        <div className="bg-zinc-950 border border-zinc-800 rounded-md max-h-64 overflow-auto">
+          {backups.length === 0 ? (
+            <div className="p-4 text-center text-zinc-500 text-sm">No server backups yet</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+                <tr>
+                  <th className="text-left px-3 py-2">Filename</th>
+                  <th className="text-left px-3 py-2">Created</th>
+                  <th className="text-right px-3 py-2">Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {backups.map(b => (
+                  <tr key={b.name} className="border-t border-zinc-800">
+                    <td className="px-3 py-1.5 font-mono text-xs">{b.name}</td>
+                    <td className="px-3 py-1.5 text-zinc-400 text-xs">{fmtDateTime(b.modifiedAt)}</td>
+                    <td className="px-3 py-1.5 text-right text-zinc-500 text-xs">{(b.size / 1024).toFixed(1)} KB</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <p className="text-xs text-zinc-500 mt-2">
+          Server backups are stored in <span className="font-mono">data/backups/</span> on your cloud server.
+          SSH in to copy them off-server for extra safety.
+        </p>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
+        <h3 className="text-lg font-semibold mb-4 text-red-400 flex items-center gap-2">
+          <AlertTriangle className="w-5 h-5" /> Danger Zone
+        </h3>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between p-4 bg-zinc-950 border border-zinc-800 rounded-md">
+            <div className="mr-4">
+              <div className="font-medium">Clear Transaction History</div>
+              <div className="text-sm text-zinc-500">Removes all movements, transactions, AND monthly archives. Stock levels and admins are kept.</div>
+            </div>
+            <button onClick={() => setConfirm('history')}
+              className="px-4 py-2 bg-red-500/20 text-red-300 hover:bg-red-500/30 rounded-md font-medium text-sm whitespace-nowrap">
+              Clear History
+            </button>
+          </div>
+          <div className="flex items-center justify-between p-4 bg-zinc-950 border border-zinc-800 rounded-md">
+            <div className="mr-4">
+              <div className="font-medium">Reset Everything</div>
+              <div className="text-sm text-zinc-500">Wipes all products, operators, barcodes, history, and archives. Admins and backups are kept.</div>
+            </div>
+            <button onClick={() => setConfirm('all')}
+              className="px-4 py-2 bg-red-500 text-white hover:bg-red-400 rounded-md font-medium text-sm whitespace-nowrap">
+              Reset Everything
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {confirm === 'history' && (
+        <ConfirmDialog title="Clear all transaction history?"
+          message="This permanently deletes every movement, transaction, AND monthly archive. Current stock levels are NOT changed. This cannot be undone."
+          confirmLabel="Clear History" onConfirm={clearHistory} onCancel={() => setConfirm(null)} />
+      )}
+      {confirm === 'all' && (
+        <ConfirmDialog title="Reset entire system?"
+          message="This deletes products, operators, barcodes, transactions, history, and monthly archives. Admin accounts, branding, and server backups are kept. This cannot be undone."
+          confirmLabel="Yes, Wipe Everything" onConfirm={clearAll} onCancel={() => setConfirm(null)} />
+      )}
+      {confirm === 'restore' && (
+        <ConfirmDialog title="Restore from backup file?"
+          message="This will REPLACE all current data with the contents of the backup file. A safety snapshot is taken automatically first. Continue?"
+          confirmLabel="Yes, Choose File"
+          confirmClass="bg-amber-500 hover:bg-amber-400 text-zinc-900"
+          onConfirm={() => { fileRef.current?.click(); }} onCancel={() => setConfirm(null)} />
+      )}
+    </div>
+  );
+}

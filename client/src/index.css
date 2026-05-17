@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #09090b;
+  color: #fafafa;
+  -webkit-font-smoothing: antialiased;
+}
+
+.input {
+  background: rgb(24 24 27);
+  border: 1px solid rgb(63 63 70);
+  border-radius: 6px;
+  padding: 8px 12px;
+  width: 100%;
+  color: white;
+  outline: none;
+  font-size: 14px;
+}
+.input:focus {
+  border-color: rgb(245 158 11);
+}

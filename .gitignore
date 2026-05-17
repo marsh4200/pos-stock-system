@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+client/dist/
+
+# Runtime data (NEVER commit user data)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Env / Secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Lock files (we let server regenerate these)
+package-lock.json
