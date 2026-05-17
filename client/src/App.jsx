@@ -456,7 +456,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           <div className="my-2 border-t border-zinc-800"></div>
           <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
           <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.2.2 · Cloud + Auth</div>
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.0 · Cloud + Auth</div>
         </nav>
 
         <main className="flex-1 overflow-auto">
