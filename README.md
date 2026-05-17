@@ -1,5 +1,5 @@
 ![Language](https://img.shields.io/github/languages/top/marsh4200/pos-stock-system)
-
+![Version](https://img.shields.io/badge/dynamic/txt?label=version&url=https://raw.githubusercontent.com/marsh4200/pos-stock-system/main/VERSION&color=blue)
 # POS Stock System
 
 Self-hosted stock & barcode tracking for workshops, retail, and small businesses.
