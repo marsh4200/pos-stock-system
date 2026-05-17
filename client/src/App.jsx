@@ -456,7 +456,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           <div className="my-2 border-t border-zinc-800"></div>
           <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
           <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.0 · Cloud + Auth</div>
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.1 · Cloud + Auth</div>
         </nav>
 
         <main className="flex-1 overflow-auto">
@@ -2056,7 +2056,13 @@ function UpdatesSection() {
     }
   };
   const refreshStatus = async () => {
-    try { setStatus(await apiGet('/updater/status')); } catch {}
+    try {
+      const s = await apiGet('/updater/status');
+      setStatus(s);
+      return s;
+    } catch {
+      return null;
+    }
   };
 
   useEffect(() => {
@@ -2064,7 +2070,9 @@ function UpdatesSection() {
     refreshStatus();
   }, []);
 
-  // While running, poll status every 2s
+  // While running, poll status every 2s.
+  // The service WILL restart during step 6 — polls fail for ~5s while it comes back.
+  // We keep polling regardless; once the service is back, we'll see the final state.
   useEffect(() => {
     if (status.state === 'running' || status.state === 'rolling-back') {
       const id = setInterval(refreshStatus, 2000);
@@ -2073,6 +2081,16 @@ function UpdatesSection() {
     if (status.state === 'done' || status.state === 'failed') {
       refreshVersion();
     }
+  }, [status.state]);
+
+  // Safety net: if we've been "running" for >3 min, the update almost certainly
+  // finished and the polls just never came back. Force a page reload.
+  useEffect(() => {
+    if (status.state !== 'running' && status.state !== 'rolling-back') return;
+    const timer = setTimeout(() => {
+      window.location.reload();
+    }, 3 * 60 * 1000);
+    return () => clearTimeout(timer);
   }, [status.state]);
 
   const doCheck = async () => {
@@ -2123,6 +2141,19 @@ function UpdatesSection() {
   const isRunning = status.state === 'running' || status.state === 'rolling-back';
   const isFresh = status.state === 'done';
   const isFailed = status.state === 'failed';
+
+  // Track when the running state began, so we can show "Reload" button after a while
+  const [runningSince, setRunningSince] = useState(null);
+  const [showReload, setShowReload] = useState(false);
+  useEffect(() => {
+    if (isRunning && !runningSince) setRunningSince(Date.now());
+    if (!isRunning) { setRunningSince(null); setShowReload(false); }
+  }, [isRunning, runningSince]);
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = setTimeout(() => setShowReload(true), 30 * 1000);
+    return () => clearTimeout(t);
+  }, [isRunning]);
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
@@ -2207,8 +2238,19 @@ function UpdatesSection() {
               {status.state === 'rolling-back' ? 'Rolling back…' : 'Updating…'}
             </div>
           </div>
-          <div className="text-xs text-amber-300 mb-3">⚠️ Don't close this window. The app will briefly disconnect while it restarts.</div>
+          <div className="text-xs text-amber-300 mb-3">⚠️ This takes about a minute. The app will briefly disconnect while it restarts — that's normal.</div>
           <pre className="bg-black/50 rounded p-3 text-xs text-zinc-300 max-h-64 overflow-auto whitespace-pre-wrap">{status.log || 'Starting…'}</pre>
+          {showReload && (
+            <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded">
+              <div className="text-sm text-amber-200 mb-2">
+                Taking longer than expected? The update may have finished but the page lost connection while the service restarted.
+              </div>
+              <button onClick={() => window.location.reload()}
+                className="w-full p-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold rounded">
+                Reload the page
+              </button>
+            </div>
+          )}
         </div>
       )}
 
