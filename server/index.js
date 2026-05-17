@@ -997,8 +997,8 @@ app.get('/api/updater/check', (req, res) => {
   }
   try {
     // Fetch (as everton, since the deploy key lives there)
-    execSync(`sudo -u everton git -C ${REPO_DIR} fetch origin main`, { stdio: 'pipe', timeout: 30000 });
-    const remoteVersion = execSync(`sudo -u everton git -C ${REPO_DIR} show origin/main:VERSION`, { encoding: 'utf8' }).trim();
+    execSync(`git -C ${REPO_DIR} fetch origin main`, { stdio: 'pipe', timeout: 30000 });
+    const remoteVersion = execSync(`git -C ${REPO_DIR} show origin/main:VERSION`, { encoding: 'utf8' }).trim();
     const localVersion = readLocalVersion();
     const localSha = execSync(`git -C ${REPO_DIR} rev-parse HEAD`, { encoding: 'utf8' }).trim();
     const remoteSha = execSync(`git -C ${REPO_DIR} rev-parse origin/main`, { encoding: 'utf8' }).trim();
