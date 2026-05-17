@@ -1,5 +1,5 @@
 ![Language](https://img.shields.io/github/languages/top/marsh4200/pos-stock-system)
-![Shell](https://img.shields.io/badge/language-shell-blue)
+![Shell Script](https://img.shields.io/badge/shell-script-green?logo=gnu-bash)
 # POS Stock System
 
 Self-hosted stock & barcode tracking for workshops, retail, and small businesses.
