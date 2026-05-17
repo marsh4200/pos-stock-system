@@ -3,6 +3,15 @@
 Self-hosted stock & barcode tracking for workshops, retail, and small businesses.
 Built on Node.js + SQLite + React. Designed to run on a small Ubuntu VPS.
 
+| Device         | Good?     | Notes                        |
+| -------------- | --------- | ---------------------------- |
+| Raspberry Pi 4 | Yes       | Fine for small shop/workshop |
+| Raspberry Pi 5 | Excellent | Fast enough for many users   |
+| Intel NUC      | Excellent | More professional long-term  |
+| Ubuntu VPS     | Excellent | Remote/cloud hosted          |
+| Old PC         | Yes       | Cheap self-host option       |
+
+
 ## ✨ Features
 
 - USB barcode scanner workflow for issuing stock
