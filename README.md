@@ -1,6 +1,4 @@
 ![Language](https://img.shields.io/github/languages/top/marsh4200/pos-stock-system)
-![Version](https://img.shields.io/github/v/release/marsh4200/pos-stock-system)
-![License](https://img.shields.io/github/license/marsh4200/pos-stock-system)
 
 # POS Stock System
 
