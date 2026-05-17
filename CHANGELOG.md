@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.2.1 — 2026-05-17
+
+### Fixed
+- Updates section showed "Updater not configured" even when it was, due to a UI rendering bug on first load.
+- Sidebar footer now correctly shows the current version.
+
+### Notes
+This is the first version delivered via the in-app updater itself. 🎉
+
+---
+
 ## v3.2.0 — 2026-05-17
 
 ### New features

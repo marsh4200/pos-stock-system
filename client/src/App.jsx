@@ -456,7 +456,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           <div className="my-2 border-t border-zinc-800"></div>
           <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
           <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.1 · Cloud + Auth</div>
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.2.1 · Cloud + Auth</div>
         </nav>
 
         <main className="flex-1 overflow-auto">
@@ -2034,17 +2034,26 @@ function ChangePasswordModal({ user, isSelf, onSave, onClose }) {
 // ============================================================
 function UpdatesSection() {
   const [version, setVersion] = useState(null);
-  const [check, setCheck] = useState(null); // null | {currentVersion, latestVersion, updateAvailable, ...} | {error}
+  const [versionError, setVersionError] = useState(null);
+  const [versionLoaded, setVersionLoaded] = useState(false);
+  const [check, setCheck] = useState(null);
   const [status, setStatus] = useState({ state: 'idle', log: '', hasPrevious: false });
   const [checking, setChecking] = useState(false);
   const [showLog, setShowLog] = useState(false);
-  const [confirm, setConfirm] = useState(null); // 'update' | 'rollback' | null
+  const [confirm, setConfirm] = useState(null);
   const [changelog, setChangelog] = useState('');
   const [showChangelog, setShowChangelog] = useState(false);
 
-  // Poll version + status
   const refreshVersion = async () => {
-    try { setVersion(await apiGet('/updater/version')); } catch {}
+    try {
+      const v = await apiGet('/updater/version');
+      setVersion(v);
+      setVersionError(null);
+    } catch (e) {
+      setVersionError(e.message);
+    } finally {
+      setVersionLoaded(true);
+    }
   };
   const refreshStatus = async () => {
     try { setStatus(await apiGet('/updater/status')); } catch {}
@@ -2124,9 +2133,15 @@ function UpdatesSection() {
         Pull the latest version of the system from GitHub. Your data is backed up automatically before each update.
       </p>
 
-      {!version?.repoConfigured && (
+      {versionLoaded && versionError && (
+        <div className="p-4 bg-red-500/10 border border-red-500/30 text-red-200 rounded text-sm mb-4">
+          ⚠️ Could not load version info: {versionError}
+        </div>
+      )}
+
+      {versionLoaded && !versionError && version && !version.repoConfigured && (
         <div className="p-4 bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded text-sm mb-4">
-          ⚠️ Updater not configured on the server yet. Run <code className="bg-zinc-950 px-1 rounded">bash /opt/pos-stock-system/scripts/setup-git.sh</code> as root.
+          ⚠️ Updater not configured on the server yet. Run <code className="bg-zinc-950 px-1 rounded">sudo bash /opt/pos-stock-system/scripts/bootstrap-updater.sh</code> as root.
         </div>
       )}
 
