@@ -885,12 +885,9 @@ app.get('/api/health', (req, res) => {
 // SERVE FRONTEND
 // ============================================================
 const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');
+// Serve static files; the SPA catch-all is registered AFTER all API routes (at the bottom)
 if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
-  app.get('*', (req, res) => {
-    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
-    res.sendFile(path.join(CLIENT_DIST, 'index.html'));
-  });
 }
 
 // ============================================================
@@ -1066,6 +1063,16 @@ app.get('/api/updater/status', (req, res) => {
 app.get('/api/updater/changelog', (req, res) => {
   res.type('text/markdown').send(readChangelog());
 });
+
+// ============================================================
+// SPA CATCH-ALL (must be after all /api routes)
+// ============================================================
+if (fs.existsSync(CLIENT_DIST)) {
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+    res.sendFile(path.join(CLIENT_DIST, 'index.html'));
+  });
+}
 
 // ============================================================
 // START

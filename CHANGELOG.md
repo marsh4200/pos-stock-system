@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.2.2 — 2026-05-17
+
+### Fixed (CRITICAL)
+- **Updater API endpoints returned "Not found"**: The SPA catch-all route was registered before the `/api/updater/*` routes, so all updater API calls were swallowed by the frontend fallback and returned a 404 JSON. Moved the catch-all to run last, so all API routes are reachable.
+
+This fixes the in-app updater for both fresh installs and existing servers.
+
+---
+
 ## v3.2.1 — 2026-05-17
 
 ### Fixed
