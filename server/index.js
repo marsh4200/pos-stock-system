@@ -12,6 +12,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn, execSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -938,10 +939,139 @@ setInterval(() => {
 }, 30 * 60 * 1000); // every 30 minutes
 
 // ============================================================
+// IN-APP UPDATER API
+// ============================================================
+const REPO_DIR = process.env.REPO_DIR || '/opt/pos-stock-system';
+const INSTALL_DIR = process.env.INSTALL_DIR || '/opt/everton-stock';
+const UPDATER_LOG = path.join(DATA_DIR, 'updater.log');
+const UPDATER_STATE = path.join(DATA_DIR, 'updater.state');
+
+function readLocalVersion() {
+  try {
+    return fs.readFileSync(path.join(INSTALL_DIR, 'VERSION'), 'utf8').trim();
+  } catch {
+    try {
+      return fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim();
+    } catch {
+      return 'unknown';
+    }
+  }
+}
+
+function readChangelog() {
+  for (const p of [path.join(INSTALL_DIR, 'CHANGELOG.md'), path.join(__dirname, '..', 'CHANGELOG.md')]) {
+    try { return fs.readFileSync(p, 'utf8'); } catch {}
+  }
+  return '';
+}
+
+function readUpdaterState() {
+  try { return fs.readFileSync(UPDATER_STATE, 'utf8').trim(); } catch { return 'idle'; }
+}
+
+function readUpdaterLog(maxLines = 200) {
+  try {
+    const content = fs.readFileSync(UPDATER_LOG, 'utf8');
+    const lines = content.split('\n');
+    return lines.slice(-maxLines).join('\n');
+  } catch { return ''; }
+}
+
+// Current version + git SHA
+app.get('/api/updater/version', (req, res) => {
+  let sha = null;
+  let branch = null;
+  try {
+    sha = execSync(`git -C ${REPO_DIR} rev-parse HEAD`, { encoding: 'utf8' }).trim().slice(0, 8);
+    branch = execSync(`git -C ${REPO_DIR} rev-parse --abbrev-ref HEAD`, { encoding: 'utf8' }).trim();
+  } catch {}
+  res.json({
+    version: readLocalVersion(),
+    sha,
+    branch,
+    repoConfigured: fs.existsSync(REPO_DIR + '/.git'),
+  });
+});
+
+// Check GitHub for newer version
+app.get('/api/updater/check', (req, res) => {
+  if (!fs.existsSync(REPO_DIR + '/.git')) {
+    return res.status(400).json({ error: 'Updater not configured. Run scripts/setup-git.sh on the server.' });
+  }
+  try {
+    // Fetch (as everton, since the deploy key lives there)
+    execSync(`sudo -u everton git -C ${REPO_DIR} fetch origin main`, { stdio: 'pipe', timeout: 30000 });
+    const remoteVersion = execSync(`sudo -u everton git -C ${REPO_DIR} show origin/main:VERSION`, { encoding: 'utf8' }).trim();
+    const localVersion = readLocalVersion();
+    const localSha = execSync(`git -C ${REPO_DIR} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+    const remoteSha = execSync(`git -C ${REPO_DIR} rev-parse origin/main`, { encoding: 'utf8' }).trim();
+    res.json({
+      currentVersion: localVersion,
+      latestVersion: remoteVersion,
+      updateAvailable: localSha !== remoteSha,
+      currentSha: localSha.slice(0, 8),
+      latestSha: remoteSha.slice(0, 8),
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Check failed: ' + (e.message || 'unknown') });
+  }
+});
+
+// Trigger update (returns immediately, runs in background)
+app.post('/api/updater/update', (req, res) => {
+  const state = readUpdaterState();
+  if (state === 'running' || state === 'rolling-back') {
+    return res.status(409).json({ error: 'An update is already in progress.' });
+  }
+  if (!fs.existsSync(REPO_DIR + '/scripts/updater.sh')) {
+    return res.status(400).json({ error: 'Updater not configured. Run scripts/setup-git.sh on the server.' });
+  }
+  // Spawn detached so it survives if the service restarts during the update
+  const child = spawn('sudo', ['-n', `${REPO_DIR}/scripts/updater.sh`], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  res.json({ ok: true, message: 'Update started', startedBy: req.user.username });
+});
+
+// Trigger rollback
+app.post('/api/updater/rollback', (req, res) => {
+  const state = readUpdaterState();
+  if (state === 'running' || state === 'rolling-back') {
+    return res.status(409).json({ error: 'An update is already in progress.' });
+  }
+  if (!fs.existsSync(path.join(DATA_DIR, 'previous-sha'))) {
+    return res.status(400).json({ error: 'No previous version to roll back to.' });
+  }
+  const child = spawn('sudo', ['-n', `${REPO_DIR}/scripts/rollback.sh`], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  res.json({ ok: true, message: 'Rollback started', startedBy: req.user.username });
+});
+
+// Live status + recent log
+app.get('/api/updater/status', (req, res) => {
+  res.json({
+    state: readUpdaterState(),
+    log: readUpdaterLog(200),
+    hasPrevious: fs.existsSync(path.join(DATA_DIR, 'previous-sha')),
+  });
+});
+
+// Full changelog
+app.get('/api/updater/changelog', (req, res) => {
+  res.type('text/markdown').send(readChangelog());
+});
+
+// ============================================================
 // START
 // ============================================================
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Everton Stock Server v3.1 running on port ${PORT}`);
+  console.log(`POS Stock Server v${readLocalVersion()} running on port ${PORT}`);
   console.log(`Data directory: ${DATA_DIR}`);
   console.log(`Database: ${DB_PATH}`);
   console.log(`Session TTL: ${SESSION_TTL_MS / 60000} min`);

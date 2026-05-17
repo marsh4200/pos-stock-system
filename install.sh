@@ -26,6 +26,15 @@ fi
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
 
+# Helper for running commands as the service user (works whether script runs as root or sudo)
+as_service_user() {
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "$SERVICE_USER" bash -c "$1"
+  else
+    sudo -u "$SERVICE_USER" bash -c "$1"
+  fi
+}
+
 # 1) Install Node.js 20 if not present
 log "Checking Node.js…"
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/v//' | cut -d. -f1)" -lt 20 ]; then
@@ -46,14 +55,16 @@ fi
 log "Installing to $INSTALL_DIR…"
 $SUDO mkdir -p "$INSTALL_DIR"
 $SUDO cp -r ./server ./client "$INSTALL_DIR/"
+[ -f ./VERSION ] && $SUDO cp ./VERSION "$INSTALL_DIR/VERSION"
+[ -f ./CHANGELOG.md ] && $SUDO cp ./CHANGELOG.md "$INSTALL_DIR/CHANGELOG.md"
 $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # 4) Install dependencies and build
 log "Installing server dependencies…"
-$SUDO -u "$SERVICE_USER" bash -c "cd '$INSTALL_DIR/server' && npm install --omit=dev"
+as_service_user "cd '$INSTALL_DIR/server' && npm install --omit=dev"
 
 log "Installing client dependencies and building…"
-$SUDO -u "$SERVICE_USER" bash -c "cd '$INSTALL_DIR/client' && npm install && npm run build"
+as_service_user "cd '$INSTALL_DIR/client' && npm install && npm run build"
 
 # 5) Create systemd service
 log "Creating systemd service…"

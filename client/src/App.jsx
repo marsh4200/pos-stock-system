@@ -4,7 +4,8 @@ import {
   AlertTriangle, Search, X, Check, Undo2, LogOut, TrendingDown, Box,
   Edit3, Volume2, VolumeX, Download, Upload, Settings as SettingsIcon,
   ChevronDown, ChevronRight, Save, RefreshCw, Loader2, Lock, UserCog,
-  KeyRound, Eye, EyeOff, Calendar, CalendarCheck, Archive, Image
+  KeyRound, Eye, EyeOff, Calendar, CalendarCheck, Archive, Image,
+  CloudDownload, RotateCcw, GitBranch, Sparkles
 } from 'lucide-react';
 
 // ============================================================
@@ -2028,6 +2029,239 @@ function ChangePasswordModal({ user, isSelf, onSave, onClose }) {
 // ============================================================
 // SETTINGS - branding+logo, backup/restore, danger zone
 // ============================================================
+// ============================================================
+// UpdatesSection — in-app updater UI
+// ============================================================
+function UpdatesSection() {
+  const [version, setVersion] = useState(null);
+  const [check, setCheck] = useState(null); // null | {currentVersion, latestVersion, updateAvailable, ...} | {error}
+  const [status, setStatus] = useState({ state: 'idle', log: '', hasPrevious: false });
+  const [checking, setChecking] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+  const [confirm, setConfirm] = useState(null); // 'update' | 'rollback' | null
+  const [changelog, setChangelog] = useState('');
+  const [showChangelog, setShowChangelog] = useState(false);
+
+  // Poll version + status
+  const refreshVersion = async () => {
+    try { setVersion(await apiGet('/updater/version')); } catch {}
+  };
+  const refreshStatus = async () => {
+    try { setStatus(await apiGet('/updater/status')); } catch {}
+  };
+
+  useEffect(() => {
+    refreshVersion();
+    refreshStatus();
+  }, []);
+
+  // While running, poll status every 2s
+  useEffect(() => {
+    if (status.state === 'running' || status.state === 'rolling-back') {
+      const id = setInterval(refreshStatus, 2000);
+      return () => clearInterval(id);
+    }
+    if (status.state === 'done' || status.state === 'failed') {
+      refreshVersion();
+    }
+  }, [status.state]);
+
+  const doCheck = async () => {
+    setChecking(true);
+    setCheck(null);
+    try {
+      const r = await apiGet('/updater/check');
+      setCheck(r);
+    } catch (e) {
+      setCheck({ error: e.message });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const doUpdate = async () => {
+    setConfirm(null);
+    setShowLog(true);
+    try {
+      await apiPost('/updater/update');
+      setStatus({ state: 'running', log: '', hasPrevious: false });
+      setTimeout(refreshStatus, 500);
+    } catch (e) {
+      alert('Failed to start update: ' + e.message);
+    }
+  };
+
+  const doRollback = async () => {
+    setConfirm(null);
+    setShowLog(true);
+    try {
+      await apiPost('/updater/rollback');
+      setStatus({ state: 'rolling-back', log: '', hasPrevious: status.hasPrevious });
+      setTimeout(refreshStatus, 500);
+    } catch (e) {
+      alert('Failed to start rollback: ' + e.message);
+    }
+  };
+
+  const loadChangelog = async () => {
+    try {
+      const r = await fetch('/api/updater/changelog', { headers: { 'Authorization': `Bearer ${getToken()}` } });
+      setChangelog(await r.text());
+      setShowChangelog(true);
+    } catch {}
+  };
+
+  const isRunning = status.state === 'running' || status.state === 'rolling-back';
+  const isFresh = status.state === 'done';
+  const isFailed = status.state === 'failed';
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
+      <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+        <CloudDownload className="w-5 h-5 text-sky-400" /> Updates
+      </h3>
+      <p className="text-sm text-zinc-400 mb-5">
+        Pull the latest version of the system from GitHub. Your data is backed up automatically before each update.
+      </p>
+
+      {!version?.repoConfigured && (
+        <div className="p-4 bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded text-sm mb-4">
+          ⚠️ Updater not configured on the server yet. Run <code className="bg-zinc-950 px-1 rounded">bash /opt/pos-stock-system/scripts/setup-git.sh</code> as root.
+        </div>
+      )}
+
+      {/* Current version row */}
+      <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-lg p-4 mb-3">
+        <div>
+          <div className="text-xs text-zinc-500 uppercase tracking-wide">Current version</div>
+          <div className="text-2xl font-bold text-zinc-100 mt-1">v{version?.version || '…'}</div>
+          {version?.sha && (
+            <div className="text-xs text-zinc-500 mt-1 flex items-center gap-1">
+              <GitBranch className="w-3 h-3" /> {version.branch || 'main'} · {version.sha}
+            </div>
+          )}
+        </div>
+        <button onClick={loadChangelog}
+          className="text-sm text-sky-400 hover:text-sky-300 underline">
+          View changelog
+        </button>
+      </div>
+
+      {/* Check button */}
+      {!isRunning && (
+        <button onClick={doCheck} disabled={checking || !version?.repoConfigured}
+          className="w-full flex items-center justify-center gap-2 p-3 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded-md font-medium mb-3">
+          {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          {checking ? 'Checking GitHub…' : 'Check for Updates'}
+        </button>
+      )}
+
+      {/* Check result */}
+      {check?.error && (
+        <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded text-sm mb-3">
+          {check.error}
+        </div>
+      )}
+      {check && !check.error && !check.updateAvailable && (
+        <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded text-sm mb-3 flex items-center gap-2">
+          <Check className="w-4 h-4" /> You're on the latest version (v{check.currentVersion}).
+        </div>
+      )}
+      {check && !check.error && check.updateAvailable && !isRunning && (
+        <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg p-4 mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles className="w-5 h-5 text-sky-300" />
+            <div className="font-semibold text-sky-200">Update available: v{check.latestVersion}</div>
+          </div>
+          <div className="text-xs text-zinc-400 mb-3">
+            {check.currentSha} → {check.latestSha}
+          </div>
+          <button onClick={() => setConfirm('update')}
+            className="w-full p-3 bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold rounded-md">
+            Update Now
+          </button>
+        </div>
+      )}
+
+      {/* Running state */}
+      {isRunning && (
+        <div className="bg-zinc-950 border border-sky-500/30 rounded-lg p-4 mb-3">
+          <div className="flex items-center gap-2 mb-3">
+            <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
+            <div className="font-semibold text-sky-200">
+              {status.state === 'rolling-back' ? 'Rolling back…' : 'Updating…'}
+            </div>
+          </div>
+          <div className="text-xs text-amber-300 mb-3">⚠️ Don't close this window. The app will briefly disconnect while it restarts.</div>
+          <pre className="bg-black/50 rounded p-3 text-xs text-zinc-300 max-h-64 overflow-auto whitespace-pre-wrap">{status.log || 'Starting…'}</pre>
+        </div>
+      )}
+
+      {/* Done / Failed */}
+      {isFresh && !isRunning && (
+        <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded text-sm mb-3 flex items-center justify-between">
+          <span className="flex items-center gap-2"><Check className="w-4 h-4" /> Last operation succeeded.</span>
+          <button onClick={() => setShowLog(s => !s)} className="text-xs underline">{showLog ? 'Hide' : 'Show'} log</button>
+        </div>
+      )}
+      {isFailed && (
+        <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded text-sm mb-3 flex items-center justify-between">
+          <span className="flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> Last operation failed.</span>
+          <button onClick={() => setShowLog(s => !s)} className="text-xs underline">{showLog ? 'Hide' : 'Show'} log</button>
+        </div>
+      )}
+      {showLog && !isRunning && status.log && (
+        <pre className="bg-black/50 rounded p-3 text-xs text-zinc-300 max-h-64 overflow-auto whitespace-pre-wrap mb-3">{status.log}</pre>
+      )}
+
+      {/* Rollback */}
+      {status.hasPrevious && !isRunning && (
+        <div className="mt-4 pt-4 border-t border-zinc-800">
+          <button onClick={() => setConfirm('rollback')}
+            className="text-sm flex items-center gap-2 text-amber-300 hover:text-amber-200">
+            <RotateCcw className="w-4 h-4" /> Roll back to previous version
+          </button>
+        </div>
+      )}
+
+      {/* Confirms */}
+      {confirm === 'update' && (
+        <ConfirmDialog
+          title={`Update to v${check?.latestVersion}?`}
+          message="This pulls the latest code from GitHub, rebuilds the frontend, and restarts the service. Your data is backed up automatically. The app will briefly disconnect (~1-2 min)."
+          confirmLabel="Yes, Update Now"
+          confirmClass="bg-sky-500 hover:bg-sky-400 text-zinc-950"
+          onConfirm={doUpdate}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm === 'rollback' && (
+        <ConfirmDialog
+          title="Roll back to previous version?"
+          message="This will undo the last update. Your data is preserved. The app will briefly disconnect while it rebuilds."
+          confirmLabel="Yes, Roll Back"
+          confirmClass="bg-amber-500 hover:bg-amber-400 text-zinc-900"
+          onConfirm={doRollback}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+
+      {/* Changelog modal */}
+      {showChangelog && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg max-w-2xl w-full max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+              <h3 className="text-lg font-semibold">Changelog</h3>
+              <button onClick={() => setShowChangelog(false)} className="text-zinc-400 hover:text-zinc-200"><X className="w-5 h-5" /></button>
+            </div>
+            <pre className="p-6 overflow-auto text-sm text-zinc-300 whitespace-pre-wrap">{changelog || 'No changelog available.'}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsScreen({ refresh, branding, refreshBranding }) {
   const [confirm, setConfirm] = useState(null);
   const [backups, setBackups] = useState([]);
@@ -2177,6 +2411,9 @@ function SettingsScreen({ refresh, branding, refreshBranding }) {
           </div>
         </div>
       </div>
+
+      {/* Updates */}
+      <UpdatesSection />
 
       {/* Backup & Restore */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">

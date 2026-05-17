@@ -1,5 +1,19 @@
 # Changelog
 
+## v3.2.0 — 2026-05-17
+
+### New features
+- **In-app updater**: Settings → Updates. Check for updates from GitHub and update with one click. Live progress log shown while updating.
+- **One-click rollback**: After any update, a "Roll back to previous version" button appears so you can instantly revert if something's wrong.
+- **Changelog viewer**: Read what's new in every version directly from Settings.
+- **Auto-backup before update**: A safety snapshot of the database is taken automatically before any update or rollback.
+
+### Behind the scenes
+- GitHub is now the source of truth for the codebase.
+- New `/api/updater/*` endpoints (admin-only) for version check, update trigger, status polling, and rollback.
+
+---
+
 ## v3.1.0 — 2026-05-17
 
 ### New features
