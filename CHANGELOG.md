@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.3.1 — 2026-05-17
+
+### Fixed
+- Updates window stayed on "Updating…" forever after the service restarted, because the status polls failed when the service was briefly down. Now:
+  - The page auto-reloads if the update has been "running" for over 3 minutes (safety net).
+  - After 30 seconds of "running", a manual "Reload the page" button appears in case the user wants to refresh sooner.
+  - Friendlier message: clarifies the disconnect is expected, not a problem.
+
+---
+
 ## v3.3.0 — 2026-05-17
 
 ### New
