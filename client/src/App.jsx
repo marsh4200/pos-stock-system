@@ -518,7 +518,17 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {user?.role === 'admin' && <div className="my-2 border-t border-zinc-800"></div>}
           {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
           {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.5 · Cloud + Auth</div>
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">
+            v3.3.6 · Cloud + Auth · Open Source project by{" "}
+            <a
+              href="https://github.com/marsh4200"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:underline"
+            >
+              marsh4200
+            </a>
+          </div>
         </nav>
 
         <main className="flex-1 overflow-auto">

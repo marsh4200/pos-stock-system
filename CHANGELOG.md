@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.3.6 — 2026-05-18
+
+### Changed
+- Sidebar footer now includes a credit link to the GitHub repo author.
+
+---
+
 ## v3.3.5 — 2026-05-18
 
 ### New: User accounts with permissions 🔐
