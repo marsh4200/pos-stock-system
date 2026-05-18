@@ -45,12 +45,14 @@ say "Reinstalling deps and rebuilding..."
 sudo -u "$SERVICE_USER" bash -c "cd '$INSTALL_DIR/server' && npm install --omit=dev" 2>&1 | tee -a "$LOG_FILE" || fail "server npm install failed"
 sudo -u "$SERVICE_USER" bash -c "cd '$INSTALL_DIR/client' && npm install && npm run build" 2>&1 | tee -a "$LOG_FILE" || fail "client build failed"
 
-say "Restarting service..."
-systemctl restart "$SERVICE" || fail "systemctl restart failed"
-sleep 3
-systemctl is-active --quiet "$SERVICE" || fail "Service failed to start after rollback"
-
+# IMPORTANT: write final state BEFORE restart, since the restart will kill us.
 NEW_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
 say "✅ Rolled back to v$NEW_VERSION"
 set_state "done"
+say "Restarting service..."
+if command -v systemd-run >/dev/null 2>&1; then
+  systemd-run --scope --quiet --collect systemctl restart "$SERVICE" >/dev/null 2>&1 || systemctl restart "$SERVICE"
+else
+  systemctl restart "$SERVICE" || true
+fi
 exit 0

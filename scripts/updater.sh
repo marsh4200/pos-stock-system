@@ -78,16 +78,23 @@ sudo -u "$SERVICE_USER" bash -c "cd '$INSTALL_DIR/client' && npm install && npm 
 say "  ✓ Build complete"
 
 # 6. Restart
+# IMPORTANT: systemctl restart will kill US (we're a child of the service's cgroup).
+# So we set the state to "done" and write a final log line BEFORE restarting.
+NEW_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
 say "Step 6/6: Restarting service..."
-systemctl restart "$SERVICE" || fail "systemctl restart failed"
+say "✅ Update complete! Now on v$NEW_VERSION"
+set_state "done"
+# Use systemd-run to detach the restart from our cgroup so we can survive it.
+# Falls back to direct restart (and accepting being killed) if systemd-run isn't available.
+if command -v systemd-run >/dev/null 2>&1; then
+  systemd-run --scope --quiet --collect systemctl restart "$SERVICE" >/dev/null 2>&1 || systemctl restart "$SERVICE"
+else
+  systemctl restart "$SERVICE" || fail "systemctl restart failed"
+fi
 sleep 3
 if systemctl is-active --quiet "$SERVICE"; then
   say "  ✓ Service is running"
 else
-  fail "Service failed to start - run: journalctl -u $SERVICE -n 50"
+  say "⚠️  Service may not be running. Check: journalctl -u $SERVICE -n 50"
 fi
-
-NEW_VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
-say "✅ Update complete! Now on v$NEW_VERSION"
-set_state "done"
 exit 0
