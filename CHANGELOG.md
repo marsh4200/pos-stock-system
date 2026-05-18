@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.3.2 — 2026-05-17
+
+### Fixed
+- **Update screen no longer gets stuck**. When the user triggers an update and the server then reports "done", the page now auto-reloads after 1.5 seconds — picking up the new frontend code and showing a green "✅ Update successful!" banner.
+- Safety net auto-reload timeout cut from 3 min → 45 sec (typical update is 15-20 sec).
+- Manual "Reload the page" button now appears after 10 sec instead of 30 sec.
+- Clearer "Update successful" banner appears for 6 seconds after a successful update.
+
+### Tip
+After installing v3.3.2, the very NEXT update you do will be smooth — the new auto-reload logic only kicks in for updates done from v3.3.2+ frontend.
+
+---
+
 ## v3.3.1 — 2026-05-17
 
 ### Fixed
