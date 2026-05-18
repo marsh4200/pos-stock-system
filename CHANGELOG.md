@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.3.5 — 2026-05-18
+
+### New: User accounts with permissions 🔐
+
+The old "Admin Users" page has been redesigned and renamed to **Accounts**. Two types of accounts now exist:
+
+- **Admin** — full access to everything (same as before)
+- **User** — limited access, only what you tick when creating them
+
+When you create a User, you choose which of these 8 permissions they get:
+- Issue Stock (scan barcodes)
+- View Dashboard
+- View Products (read-only — cannot edit or delete)
+- Receive Stock (+Stock button)
+- View Operators (read-only — cannot edit or delete)
+- View History
+- View Reports + Monthly Reports
+- Apply System Updates
+
+Users only see the sidebar entries for sections they have permission to access. They can't edit Products, Operators, Branding, or any admin-only setting — even if they try the API directly. Admins always have full access.
+
+### Notes for existing admins
+
+All your existing admins keep their full admin powers (the migration sets them all to `role=admin`). When you upgrade to v3.3.5, head to **Accounts** to:
+- Promote any existing admin to a User if you want to restrict them
+- Or simply start adding new Users with tailored permissions
+
+### Behind the scenes
+- Added `role` and `permissions` columns to the users table (auto-migrates on first start)
+- New `requirePermission()` and `requireAdmin()` middleware on the server
+- Every API endpoint enforces permissions; the UI only hides controls a user can't use, but the server is the source of truth
+- Login and session responses now include role + permissions so the UI can adapt
+
+---
+
 ## v3.3.2 — 2026-05-17
 
 ### Fixed
