@@ -456,7 +456,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           <div className="my-2 border-t border-zinc-800"></div>
           <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
           <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.1 · Cloud + Auth</div>
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.2 · Cloud + Auth</div>
         </nav>
 
         <main className="flex-1 overflow-auto">
@@ -2044,6 +2044,23 @@ function UpdatesSection() {
   const [changelog, setChangelog] = useState('');
   const [showChangelog, setShowChangelog] = useState(false);
 
+  // Post-reload "Update successful" banner — set in sessionStorage right before
+  // the auto-reload fires after an update.
+  const [justUpdated, setJustUpdated] = useState(() => {
+    try {
+      if (sessionStorage.getItem('updater:justFinished') === '1') {
+        sessionStorage.removeItem('updater:justFinished');
+        return true;
+      }
+    } catch {}
+    return false;
+  });
+  useEffect(() => {
+    if (!justUpdated) return;
+    const t = setTimeout(() => setJustUpdated(false), 6000);
+    return () => clearTimeout(t);
+  }, [justUpdated]);
+
   const refreshVersion = async () => {
     try {
       const v = await apiGet('/updater/version');
@@ -2070,6 +2087,10 @@ function UpdatesSection() {
     refreshStatus();
   }, []);
 
+  // Track whether the user actually triggered an update in this session,
+  // so we can auto-reload when the state transitions from running -> done.
+  const [didTrigger, setDidTrigger] = useState(false);
+
   // While running, poll status every 2s.
   // The service WILL restart during step 6 — polls fail for ~5s while it comes back.
   // We keep polling regardless; once the service is back, we'll see the final state.
@@ -2083,13 +2104,28 @@ function UpdatesSection() {
     }
   }, [status.state]);
 
-  // Safety net: if we've been "running" for >3 min, the update almost certainly
-  // finished and the polls just never came back. Force a page reload.
+  // When the user triggers an update and we then see state become "done" OR
+  // when version SHA changes (clear sign the new code is running),
+  // auto-reload after a moment to load the new frontend JS.
+  useEffect(() => {
+    if (!didTrigger) return;
+    if (status.state === 'done') {
+      try { sessionStorage.setItem('updater:justFinished', '1'); } catch {}
+      const t = setTimeout(() => window.location.reload(), 1500);
+      return () => clearTimeout(t);
+    }
+  }, [didTrigger, status.state]);
+
+  // Safety net: if we've been "running" for >45s, the update almost certainly
+  // finished (typical update takes ~15-20s). Force a page reload, which loads the
+  // new JS bundle AND picks up the "done" state from the server.
   useEffect(() => {
     if (status.state !== 'running' && status.state !== 'rolling-back') return;
     const timer = setTimeout(() => {
+      // Remember that we just did an update so the post-reload page can show a banner
+      try { sessionStorage.setItem('updater:justFinished', '1'); } catch {}
       window.location.reload();
-    }, 3 * 60 * 1000);
+    }, 45 * 1000);
     return () => clearTimeout(timer);
   }, [status.state]);
 
@@ -2109,24 +2145,28 @@ function UpdatesSection() {
   const doUpdate = async () => {
     setConfirm(null);
     setShowLog(true);
+    setDidTrigger(true);
     try {
       await apiPost('/updater/update');
       setStatus({ state: 'running', log: '', hasPrevious: false });
       setTimeout(refreshStatus, 500);
     } catch (e) {
       alert('Failed to start update: ' + e.message);
+      setDidTrigger(false);
     }
   };
 
   const doRollback = async () => {
     setConfirm(null);
     setShowLog(true);
+    setDidTrigger(true);
     try {
       await apiPost('/updater/rollback');
       setStatus({ state: 'rolling-back', log: '', hasPrevious: status.hasPrevious });
       setTimeout(refreshStatus, 500);
     } catch (e) {
       alert('Failed to start rollback: ' + e.message);
+      setDidTrigger(false);
     }
   };
 
@@ -2151,7 +2191,7 @@ function UpdatesSection() {
   }, [isRunning, runningSince]);
   useEffect(() => {
     if (!isRunning) return;
-    const t = setTimeout(() => setShowReload(true), 30 * 1000);
+    const t = setTimeout(() => setShowReload(true), 10 * 1000);
     return () => clearTimeout(t);
   }, [isRunning]);
 
@@ -2163,6 +2203,16 @@ function UpdatesSection() {
       <p className="text-sm text-zinc-400 mb-5">
         Pull the latest version of the system from GitHub. Your data is backed up automatically before each update.
       </p>
+
+      {justUpdated && (
+        <div className="p-4 bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 rounded mb-4 flex items-center gap-3 animate-pulse">
+          <Check className="w-6 h-6 flex-shrink-0" />
+          <div>
+            <div className="font-bold">Update successful!</div>
+            <div className="text-xs text-emerald-300/80">You're now running v{version?.version || '...'}</div>
+          </div>
+        </div>
+      )}
 
       {versionLoaded && versionError && (
         <div className="p-4 bg-red-500/10 border border-red-500/30 text-red-200 rounded text-sm mb-4">
@@ -2256,15 +2306,31 @@ function UpdatesSection() {
 
       {/* Done / Failed */}
       {isFresh && !isRunning && (
-        <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded text-sm mb-3 flex items-center justify-between">
-          <span className="flex items-center gap-2"><Check className="w-4 h-4" /> Last operation succeeded.</span>
-          <button onClick={() => setShowLog(s => !s)} className="text-xs underline">{showLog ? 'Hide' : 'Show'} log</button>
+        <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded mb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Check className="w-6 h-6 text-emerald-300" />
+              <div>
+                <div className="text-emerald-200 font-bold text-base">UPDATE SUCCESSFUL</div>
+                {version?.version && <div className="text-xs text-emerald-300 mt-0.5">Now running v{version.version}</div>}
+              </div>
+            </div>
+            <button onClick={() => setShowLog(s => !s)} className="text-xs text-emerald-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+          </div>
         </div>
       )}
       {isFailed && (
-        <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded text-sm mb-3 flex items-center justify-between">
-          <span className="flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> Last operation failed.</span>
-          <button onClick={() => setShowLog(s => !s)} className="text-xs underline">{showLog ? 'Hide' : 'Show'} log</button>
+        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded mb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 text-red-300" />
+              <div>
+                <div className="text-red-200 font-bold text-base">UPDATE FAILED</div>
+                <div className="text-xs text-red-300 mt-0.5">You can roll back below or check the log.</div>
+              </div>
+            </div>
+            <button onClick={() => setShowLog(s => !s)} className="text-xs text-red-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+          </div>
         </div>
       )}
       {showLog && !isRunning && status.log && (
