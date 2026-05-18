@@ -133,6 +133,13 @@ function ensureColumn(table, column, ddl) {
 }
 ensureColumn('transactions', 'periodId', 'TEXT');
 ensureColumn('movements', 'periodId', 'TEXT');
+// v3.3.5: users get a role + permissions list
+ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'");
+ensureColumn('users', 'permissions', "TEXT NOT NULL DEFAULT '[]'");
+
+// Backfill: any existing user from before v3.3.5 stays admin (this is the default,
+// so nothing to do unless we ever want to migrate). All new admins/users from now
+// on go through the new API which sets these properly.
 
 // Now that periodId columns are guaranteed to exist, create the indexes
 db.exec(`
@@ -191,6 +198,50 @@ if (getSetting('systemName') === null) setSetting('systemName', 'EVERTON ENGINEE
 if (getSetting('systemSubtitle') === null) setSetting('systemSubtitle', 'Tooling Stock Management');
 
 // ============================================================
+// PERMISSIONS CATALOGUE
+// ============================================================
+// Permission IDs match what the frontend uses. Adding here is a one-stop change.
+const ALL_PERMISSIONS = [
+  'issue_stock',       // Issue Stock (scan barcodes)
+  'view_dashboard',    // Dashboard
+  'view_products',     // Products (read-only)
+  'receive_stock',     // +Stock button on Products
+  'view_operators',    // Operators (read-only)
+  'view_history',      // History
+  'view_reports',      // Reports + Monthly Reports
+  'apply_updates',     // Settings → Updates → Update Now
+];
+
+function parsePermissions(raw) {
+  try {
+    const arr = JSON.parse(raw || '[]');
+    return Array.isArray(arr) ? arr.filter(p => ALL_PERMISSIONS.includes(p)) : [];
+  } catch { return []; }
+}
+
+function userHasPermission(user, perm) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;        // admins can do everything
+  return parsePermissions(user.permissions).includes(perm);
+}
+
+function requirePermission(perm) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
+    if (!userHasPermission(req.user, perm)) {
+      return res.status(403).json({ error: 'Permission denied: ' + perm });
+    }
+    next();
+  };
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  next();
+}
+
+// ============================================================
 // AUTH MIDDLEWARE
 // ============================================================
 function getValidSession(token) {
@@ -213,7 +264,7 @@ function requireAuth(req, res, next) {
   const session = getValidSession(token);
   if (!session) return res.status(401).json({ error: 'Not authenticated' });
 
-  const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(session.userId);
+  const user = db.prepare('SELECT id, username, role, permissions FROM users WHERE id = ?').get(session.userId);
   if (!user) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     return res.status(401).json({ error: 'User no longer exists' });
@@ -236,8 +287,9 @@ app.get('/api/auth/status', (req, res) => {
   const session = getValidSession(token);
   let me = null;
   if (session) {
-    me = db.prepare('SELECT id, username FROM users WHERE id = ?').get(session.userId);
-    if (me) {
+    const row = db.prepare('SELECT id, username, role, permissions FROM users WHERE id = ?').get(session.userId);
+    if (row) {
+      me = { id: row.id, username: row.username, role: row.role, permissions: parsePermissions(row.permissions) };
       const newExpiry = new Date(Date.now() + SESSION_TTL_MS).toISOString();
       db.prepare('UPDATE sessions SET expiresAt = ? WHERE token = ?').run(newExpiry, token);
     }
@@ -247,6 +299,7 @@ app.get('/api/auth/status', (req, res) => {
     authenticated: !!me,
     user: me,
     sessionTtlMs: SESSION_TTL_MS,
+    allPermissions: ALL_PERMISSIONS,
   });
 });
 
@@ -284,7 +337,8 @@ app.post('/api/auth/setup', (req, res) => {
   const id = uid();
   const hash = bcrypt.hashSync(password, 10);
   const now = new Date().toISOString();
-  db.prepare('INSERT INTO users (id, username, passwordHash, createdAt) VALUES (?, ?, ?, ?)')
+  // First user is always an admin with full permissions
+  db.prepare("INSERT INTO users (id, username, passwordHash, createdAt, role, permissions) VALUES (?, ?, ?, ?, 'admin', '[]')")
     .run(id, username.trim(), hash, now);
 
   const token = newToken();
@@ -293,7 +347,11 @@ app.post('/api/auth/setup', (req, res) => {
     .run(token, id, now, expiresAt);
   db.prepare('UPDATE users SET lastLoginAt = ? WHERE id = ?').run(now, id);
 
-  res.json({ ok: true, token, user: { id, username: username.trim() }, expiresAt });
+  res.json({
+    ok: true, token,
+    user: { id, username: username.trim(), role: 'admin', permissions: [] },
+    expiresAt,
+  });
 });
 
 app.post('/api/auth/login', (req, res) => {
@@ -313,7 +371,14 @@ app.post('/api/auth/login', (req, res) => {
     .run(token, user.id, now, expiresAt);
   db.prepare('UPDATE users SET lastLoginAt = ? WHERE id = ?').run(now, user.id);
 
-  res.json({ ok: true, token, user: { id: user.id, username: user.username }, expiresAt });
+  res.json({
+    ok: true, token,
+    user: {
+      id: user.id, username: user.username,
+      role: user.role, permissions: parsePermissions(user.permissions),
+    },
+    expiresAt,
+  });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -323,25 +388,63 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // ============================================================
-// USER MANAGEMENT
+// USER MANAGEMENT (ADMIN ONLY)
 // ============================================================
-app.get('/api/users', requireAuth, (req, res) => {
-  res.json(db.prepare('SELECT id, username, createdAt, lastLoginAt FROM users ORDER BY username').all());
+// All endpoints below require the caller to be an admin, EXCEPT
+// the change-own-password endpoint which any logged-in user can use.
+
+app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
+  const rows = db.prepare('SELECT id, username, role, permissions, createdAt, lastLoginAt FROM users ORDER BY role, username').all();
+  res.json(rows.map(r => ({
+    id: r.id, username: r.username,
+    role: r.role, permissions: parsePermissions(r.permissions),
+    createdAt: r.createdAt, lastLoginAt: r.lastLoginAt,
+  })));
 });
 
-app.post('/api/users', requireAuth, (req, res) => {
-  const { username, password } = req.body || {};
+app.post('/api/users', requireAuth, requireAdmin, (req, res) => {
+  const { username, password, role, permissions } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (username.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
   if (db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim())) {
     return res.status(400).json({ error: 'Username already taken' });
   }
+  const finalRole = role === 'admin' ? 'admin' : 'user';
+  const filtered = Array.isArray(permissions) ? permissions.filter(p => ALL_PERMISSIONS.includes(p)) : [];
+  const finalPerms = finalRole === 'admin' ? '[]' : JSON.stringify(filtered);
+
   const id = uid();
   const hash = bcrypt.hashSync(password, 10);
-  db.prepare('INSERT INTO users (id, username, passwordHash, createdAt) VALUES (?, ?, ?, ?)')
-    .run(id, username.trim(), hash, new Date().toISOString());
+  db.prepare('INSERT INTO users (id, username, passwordHash, createdAt, role, permissions) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, username.trim(), hash, new Date().toISOString(), finalRole, finalPerms);
   res.json({ ok: true, id });
+});
+
+// Update a user's role and permissions (admin only)
+app.put('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  const { role, permissions } = req.body || {};
+  const newRole = role === 'admin' ? 'admin' : 'user';
+
+  // Prevent removing the last admin
+  if (target.role === 'admin' && newRole !== 'admin') {
+    const adminCount = db.prepare("SELECT COUNT(*) as n FROM users WHERE role = 'admin'").get().n;
+    if (adminCount <= 1) return res.status(400).json({ error: 'Cannot demote the last admin' });
+  }
+
+  const filtered = Array.isArray(permissions) ? permissions.filter(p => ALL_PERMISSIONS.includes(p)) : [];
+  const newPerms = newRole === 'admin' ? '[]' : JSON.stringify(filtered);
+  db.prepare('UPDATE users SET role = ?, permissions = ? WHERE id = ?').run(newRole, newPerms, target.id);
+
+  // Invalidate target's sessions if role/permissions changed for someone OTHER than themselves
+  if (req.user.id !== target.id) {
+    db.prepare('DELETE FROM sessions WHERE userId = ?').run(target.id);
+  }
+
+  res.json({ ok: true });
 });
 
 app.post('/api/users/:id/password', requireAuth, (req, res) => {
@@ -351,11 +454,16 @@ app.post('/api/users/:id/password', requireAuth, (req, res) => {
   const target = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
+  // Self-change: must provide current password.
+  // Admin changing someone else's: allowed.
+  // Non-admin trying to change someone else's: denied.
   if (req.user.id === target.id) {
     if (!currentPassword) return res.status(400).json({ error: 'Current password required' });
     if (!bcrypt.compareSync(currentPassword, target.passwordHash)) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
+  } else {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
   }
 
   const hash = bcrypt.hashSync(newPassword, 10);
@@ -366,11 +474,15 @@ app.post('/api/users/:id/password', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/users/:id', requireAuth, (req, res) => {
-  const userCount = db.prepare('SELECT COUNT(*) as n FROM users').get().n;
-  if (userCount <= 1) return res.status(400).json({ error: 'Cannot delete the last admin user' });
+app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
   if (req.user.id === req.params.id) return res.status(400).json({ error: 'You cannot delete yourself' });
-  if (!db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'User not found' });
+  // Don't allow deleting the last admin
+  if (target.role === 'admin') {
+    const adminCount = db.prepare("SELECT COUNT(*) as n FROM users WHERE role = 'admin'").get().n;
+    if (adminCount <= 1) return res.status(400).json({ error: 'Cannot delete the last admin' });
+  }
   db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
@@ -387,6 +499,7 @@ app.use('/api', (req, res, next) => {
 // SYSTEM SETTINGS (name, subtitle, logo)
 // ============================================================
 app.get('/api/system', (req, res) => {
+  // Readable by any logged-in user (so the header can display the name)
   res.json({
     systemName: getSetting('systemName', 'EVERTON ENGINEERING'),
     systemSubtitle: getSetting('systemSubtitle', 'Tooling Stock Management'),
@@ -395,14 +508,14 @@ app.get('/api/system', (req, res) => {
   });
 });
 
-app.put('/api/system', (req, res) => {
+app.put('/api/system', requireAdmin, (req, res) => {
   const { systemName, systemSubtitle } = req.body || {};
   if (typeof systemName === 'string') setSetting('systemName', systemName.slice(0, 100));
   if (typeof systemSubtitle === 'string') setSetting('systemSubtitle', systemSubtitle.slice(0, 200));
   res.json({ ok: true });
 });
 
-app.post('/api/system/logo', logoUpload.single('logo'), (req, res) => {
+app.post('/api/system/logo', requireAdmin, logoUpload.single('logo'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const mime = req.file.mimetype || 'image/png';
   if (!mime.startsWith('image/')) return res.status(400).json({ error: 'File must be an image' });
@@ -411,7 +524,7 @@ app.post('/api/system/logo', logoUpload.single('logo'), (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/system/logo', (req, res) => {
+app.delete('/api/system/logo', requireAdmin, (req, res) => {
   try { fs.unlinkSync(path.join(UPLOAD_DIR, 'logo')); } catch {}
   try { fs.unlinkSync(path.join(UPLOAD_DIR, 'logo.meta')); } catch {}
   res.json({ ok: true });
@@ -447,7 +560,7 @@ function closePeriod(reason = 'manual', closedByUserId = null) {
   })();
 }
 
-app.get('/api/periods', (req, res) => {
+app.get('/api/periods', requirePermission('view_reports'), (req, res) => {
   const rows = db.prepare(`
     SELECT p.*,
            (SELECT COUNT(*) FROM transactions t WHERE t.periodId = p.id) as txCount,
@@ -457,12 +570,14 @@ app.get('/api/periods', (req, res) => {
   res.json(rows);
 });
 
+// /periods/current is needed by anyone who can issue stock OR view reports/history (it's lightweight metadata).
+// Allow any logged-in user.
 app.get('/api/periods/current', (req, res) => {
   const p = getCurrentPeriod();
   res.json(p);
 });
 
-app.post('/api/periods/close', (req, res) => {
+app.post('/api/periods/close', requireAdmin, (req, res) => {
   try {
     const r = closePeriod('manual', req.user.id);
     if (!r) return res.status(400).json({ error: 'No open period to close' });
@@ -475,11 +590,12 @@ app.post('/api/periods/close', (req, res) => {
 // ============================================================
 // PRODUCTS
 // ============================================================
-app.get('/api/products', (req, res) => {
+// Read needs view_products. Writes are admin-only.
+app.get('/api/products', requirePermission('view_products'), (req, res) => {
   res.json(db.prepare('SELECT * FROM products ORDER BY name').all().map(fixActive));
 });
 
-app.post('/api/products', (req, res) => {
+app.post('/api/products', requireAdmin, (req, res) => {
   const p = req.body;
   db.prepare(`INSERT INTO products
     (id, name, sku, category, location, supplier, cost, stock, minStock, reorderQty, active)
@@ -493,7 +609,7 @@ app.post('/api/products', (req, res) => {
   res.json({ ok: true });
 });
 
-app.put('/api/products/:id', (req, res) => {
+app.put('/api/products/:id', requireAdmin, (req, res) => {
   const p = req.body;
   db.prepare(`UPDATE products SET
     name=@name, sku=@sku, category=@category, location=@location, supplier=@supplier,
@@ -508,7 +624,7 @@ app.put('/api/products/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/products/:id', (req, res) => {
+app.delete('/api/products/:id', requireAdmin, (req, res) => {
   const tx = db.transaction((id) => {
     db.prepare('DELETE FROM products WHERE id = ?').run(id);
     db.prepare('DELETE FROM barcodes WHERE productId = ?').run(id);
@@ -520,11 +636,16 @@ app.delete('/api/products/:id', (req, res) => {
 // ============================================================
 // EMPLOYEES (operators)
 // ============================================================
+// Read needs view_operators OR issue_stock (the scan screen needs to look up operators).
 app.get('/api/employees', (req, res) => {
-  res.json(db.prepare('SELECT * FROM employees ORDER BY name').all().map(fixActive));
+  if (req.user.role === 'admin') return res.json(db.prepare('SELECT * FROM employees ORDER BY name').all().map(fixActive));
+  if (userHasPermission(req.user, 'view_operators') || userHasPermission(req.user, 'issue_stock')) {
+    return res.json(db.prepare('SELECT * FROM employees ORDER BY name').all().map(fixActive));
+  }
+  return res.status(403).json({ error: 'Permission denied' });
 });
 
-app.post('/api/employees', (req, res) => {
+app.post('/api/employees', requireAdmin, (req, res) => {
   const e = req.body;
   db.prepare(`INSERT INTO employees (id, name, code, role, active) VALUES (@id, @name, @code, @role, @active)`)
     .run({
@@ -534,7 +655,7 @@ app.post('/api/employees', (req, res) => {
   res.json({ ok: true });
 });
 
-app.put('/api/employees/:id', (req, res) => {
+app.put('/api/employees/:id', requireAdmin, (req, res) => {
   const e = req.body;
   db.prepare(`UPDATE employees SET name=@name, code=@code, role=@role, active=@active WHERE id=@id`)
     .run({
@@ -544,7 +665,7 @@ app.put('/api/employees/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/employees/:id', (req, res) => {
+app.delete('/api/employees/:id', requireAdmin, (req, res) => {
   const tx = db.transaction((id) => {
     db.prepare('DELETE FROM employees WHERE id = ?').run(id);
     db.prepare('DELETE FROM barcodes WHERE employeeId = ?').run(id);
@@ -556,11 +677,12 @@ app.delete('/api/employees/:id', (req, res) => {
 // ============================================================
 // BARCODES
 // ============================================================
+// Read: needed by anyone scanning. Writes: admin only.
 app.get('/api/barcodes', (req, res) => {
   res.json(db.prepare('SELECT * FROM barcodes').all());
 });
 
-app.post('/api/barcodes', (req, res) => {
+app.post('/api/barcodes', requireAdmin, (req, res) => {
   const { value, productId, employeeId } = req.body;
   try {
     db.prepare('INSERT INTO barcodes (value, productId, employeeId) VALUES (?, ?, ?)')
@@ -571,7 +693,7 @@ app.post('/api/barcodes', (req, res) => {
   }
 });
 
-app.delete('/api/barcodes/:value', (req, res) => {
+app.delete('/api/barcodes/:value', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM barcodes WHERE value = ?').run(req.params.value);
   res.json({ ok: true });
 });
@@ -579,7 +701,7 @@ app.delete('/api/barcodes/:value', (req, res) => {
 // ============================================================
 // TRANSACTIONS & MOVEMENTS
 // ============================================================
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', requirePermission('view_history'), (req, res) => {
   const { periodId } = req.query;
   if (periodId) {
     res.json(db.prepare('SELECT * FROM transactions WHERE periodId = ? ORDER BY createdAt DESC').all(periodId));
@@ -588,7 +710,7 @@ app.get('/api/transactions', (req, res) => {
   }
 });
 
-app.get('/api/movements', (req, res) => {
+app.get('/api/movements', requirePermission('view_history'), (req, res) => {
   const { periodId } = req.query;
   if (periodId) {
     res.json(db.prepare('SELECT * FROM movements WHERE periodId = ? ORDER BY createdAt DESC').all(periodId));
@@ -597,7 +719,7 @@ app.get('/api/movements', (req, res) => {
   }
 });
 
-app.post('/api/issue', (req, res) => {
+app.post('/api/issue', requirePermission('issue_stock'), (req, res) => {
   const { employeeId, lines, notes } = req.body;
   if (!employeeId || !Array.isArray(lines) || lines.length === 0) {
     return res.status(400).json({ error: 'employeeId and lines required' });
@@ -642,7 +764,7 @@ app.post('/api/issue', (req, res) => {
   }
 });
 
-app.post('/api/receive', (req, res) => {
+app.post('/api/receive', requirePermission('receive_stock'), (req, res) => {
   const { productId, qty, notes } = req.body;
   if (!productId || !qty || qty <= 0) return res.status(400).json({ error: 'productId and qty required' });
 
@@ -674,7 +796,7 @@ app.post('/api/receive', (req, res) => {
 // ============================================================
 // DETAILED HISTORY (filterable by period)
 // ============================================================
-app.get('/api/history/detailed', (req, res) => {
+app.get('/api/history/detailed', requirePermission('view_history'), (req, res) => {
   const { employeeId, periodId, from, to, limit = 500 } = req.query;
   let where = '1=1';
   const params = [];
@@ -723,7 +845,7 @@ function buildBackup() {
   };
 }
 
-app.get('/api/backup', (req, res) => {
+app.get('/api/backup', requireAdmin, (req, res) => {
   const backup = buildBackup();
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   res.setHeader('Content-Type', 'application/json');
@@ -731,7 +853,7 @@ app.get('/api/backup', (req, res) => {
   res.json(backup);
 });
 
-app.get('/api/backups/list', (req, res) => {
+app.get('/api/backups/list', requireAdmin, (req, res) => {
   const files = fs.readdirSync(BACKUP_DIR)
     .filter(f => f.endsWith('.json'))
     .map(f => {
@@ -742,7 +864,7 @@ app.get('/api/backups/list', (req, res) => {
   res.json(files);
 });
 
-app.post('/api/backups/snapshot', (req, res) => {
+app.post('/api/backups/snapshot', requireAdmin, (req, res) => {
   const backup = buildBackup();
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const filename = `auto-backup-${ts}.json`;
@@ -754,7 +876,7 @@ app.post('/api/backups/snapshot', (req, res) => {
   res.json({ ok: true, filename });
 });
 
-app.post('/api/restore', upload.single('backup'), (req, res) => {
+app.post('/api/restore', requireAdmin, upload.single('backup'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const data = JSON.parse(req.file.buffer.toString('utf-8'));
@@ -849,7 +971,7 @@ app.post('/api/restore', upload.single('backup'), (req, res) => {
 // ============================================================
 // CLEAR
 // ============================================================
-app.post('/api/clear/history', (req, res) => {
+app.post('/api/clear/history', requireAdmin, (req, res) => {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM movements').run();
     db.prepare('DELETE FROM transactions').run();
@@ -860,7 +982,7 @@ app.post('/api/clear/history', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/clear/all', (req, res) => {
+app.post('/api/clear/all', requireAdmin, (req, res) => {
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM movements').run();
     db.prepare('DELETE FROM transactions').run();
@@ -991,7 +1113,7 @@ app.get('/api/updater/version', (req, res) => {
 });
 
 // Check GitHub for newer version
-app.get('/api/updater/check', (req, res) => {
+app.get('/api/updater/check', requirePermission('apply_updates'), (req, res) => {
   if (!fs.existsSync(REPO_DIR + '/.git')) {
     return res.status(400).json({ error: 'Updater not configured. Run scripts/setup-git.sh on the server.' });
   }
@@ -1016,7 +1138,7 @@ app.get('/api/updater/check', (req, res) => {
 });
 
 // Trigger update (returns immediately, runs in background)
-app.post('/api/updater/update', (req, res) => {
+app.post('/api/updater/update', requirePermission('apply_updates'), (req, res) => {
   const state = readUpdaterState();
   if (state === 'running' || state === 'rolling-back') {
     return res.status(409).json({ error: 'An update is already in progress.' });
@@ -1034,7 +1156,7 @@ app.post('/api/updater/update', (req, res) => {
 });
 
 // Trigger rollback
-app.post('/api/updater/rollback', (req, res) => {
+app.post('/api/updater/rollback', requirePermission('apply_updates'), (req, res) => {
   const state = readUpdaterState();
   if (state === 'running' || state === 'rolling-back') {
     return res.status(409).json({ error: 'An update is already in progress.' });
