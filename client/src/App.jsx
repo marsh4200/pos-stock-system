@@ -40,6 +40,53 @@ const apiPost = (p, body) => apiRequest(p, { method: 'POST', body });
 const apiPut = (p, body) => apiRequest(p, { method: 'PUT', body });
 const apiDelete = (p) => apiRequest(p, { method: 'DELETE' });
 
+// ---------- Permissions ----------
+const ALL_PERMISSIONS = [
+  { id: 'issue_stock',    label: 'Issue Stock (scan barcodes)' },
+  { id: 'view_dashboard', label: 'View Dashboard' },
+  { id: 'view_products',  label: 'View Products (read-only)' },
+  { id: 'receive_stock',  label: 'Receive Stock (+Stock button)' },
+  { id: 'view_operators', label: 'View Operators (read-only)' },
+  { id: 'view_history',   label: 'View History' },
+  { id: 'view_reports',   label: 'View Reports + Monthly Reports' },
+  { id: 'apply_updates',  label: 'Apply System Updates' },
+];
+
+function can(user, permission) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return Array.isArray(user.permissions) && user.permissions.includes(permission);
+}
+
+function hasAccessTo(user, route) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const map = {
+    scan: 'issue_stock',
+    dashboard: 'view_dashboard',
+    products: 'view_products',
+    employees: 'view_operators',
+    history: 'view_history',
+    reports: 'view_reports',
+    monthly: 'view_reports',
+    users: null,    // admin only
+    settings: null, // admin only
+  };
+  const perm = map[route];
+  if (!perm) return false;
+  return can(user, perm);
+}
+
+function firstAccessibleRoute(user) {
+  if (!user) return 'scan';
+  if (user.role === 'admin') return 'scan';
+  const order = ['scan', 'dashboard', 'products', 'employees', 'history', 'reports', 'monthly'];
+  for (const r of order) {
+    if (hasAccessTo(user, r)) return r;
+  }
+  return null;
+}
+
 // ---------- Beep sounds ----------
 function useBeeper() {
   const ctxRef = useRef(null);
@@ -360,16 +407,31 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
   const [periods, setPeriods] = useState([]);
   const [currentPeriod, setCurrentPeriod] = useState(null);
   const [soundOn, setSoundOn] = useState(true);
-  const [route, setRoute] = useState('scan');
+  const [route, setRoute] = useState(() => firstAccessibleRoute(user) || 'scan');
+
+  // If user changes (e.g., after re-login) and they don't have access to current route, redirect
+  useEffect(() => {
+    if (user && !hasAccessTo(user, route)) {
+      const r = firstAccessibleRoute(user);
+      if (r) setRoute(r);
+    }
+  }, [user, route]);
   const [loading, setLoading] = useState(true);
   const [connError, setConnError] = useState(false);
   const beeper = useBeeper();
 
   const refresh = useCallback(async () => {
     try {
+      // Each promise is wrapped so a 403 (permission denied) just returns []/null
+      // instead of failing the whole refresh.
+      const safe = async (p, fallback) => { try { return await apiGet(p); } catch { return fallback; } };
       const [p, e, b, m, per, cur] = await Promise.all([
-        apiGet('/products'), apiGet('/employees'), apiGet('/barcodes'),
-        apiGet('/movements'), apiGet('/periods'), apiGet('/periods/current'),
+        can(user, 'view_products') ? safe('/products', []) : Promise.resolve([]),
+        (can(user, 'view_operators') || can(user, 'issue_stock')) ? safe('/employees', []) : Promise.resolve([]),
+        safe('/barcodes', []),
+        can(user, 'view_history') ? safe('/movements', []) : Promise.resolve([]),
+        can(user, 'view_reports') ? safe('/periods', []) : Promise.resolve([]),
+        safe('/periods/current', null),
       ]);
       setProducts(p); setEmployees(e); setBarcodes(b); setMovements(m);
       setPeriods(per); setCurrentPeriod(cur);
@@ -379,7 +441,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
       console.error('Refresh failed:', err);
       setConnError(true);
     } finally { setLoading(false); }
-  }, []);
+  }, [user]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { beeper.setEnabled(soundOn); }, [soundOn, beeper]);
@@ -446,29 +508,32 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
 
       <div className="flex flex-1 overflow-hidden">
         <nav className="w-56 bg-zinc-900 border-r border-zinc-800 p-3 flex flex-col gap-1">
-          <NavBtn icon={ScanLine} label="Issue Stock" active={route==='scan'} onClick={() => setRoute('scan')} highlight />
-          <NavBtn icon={BarChart3} label="Dashboard" active={route==='dashboard'} onClick={() => setRoute('dashboard')} />
-          <NavBtn icon={Package} label="Products" active={route==='products'} onClick={() => setRoute('products')} />
-          <NavBtn icon={Users} label="Operators" active={route==='employees'} onClick={() => setRoute('employees')} />
-          <NavBtn icon={History} label="History" active={route==='history'} onClick={() => setRoute('history')} />
-          <NavBtn icon={TrendingDown} label="Reports" active={route==='reports'} onClick={() => setRoute('reports')} />
-          <NavBtn icon={Archive} label="Monthly Reports" active={route==='monthly'} onClick={() => setRoute('monthly')} />
-          <div className="my-2 border-t border-zinc-800"></div>
-          <NavBtn icon={UserCog} label="Admin Users" active={route==='users'} onClick={() => setRoute('users')} />
-          <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />
-          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.2 · Cloud + Auth</div>
+          {can(user, 'issue_stock') && <NavBtn icon={ScanLine} label="Issue Stock" active={route==='scan'} onClick={() => setRoute('scan')} highlight />}
+          {can(user, 'view_dashboard') && <NavBtn icon={BarChart3} label="Dashboard" active={route==='dashboard'} onClick={() => setRoute('dashboard')} />}
+          {can(user, 'view_products') && <NavBtn icon={Package} label="Products" active={route==='products'} onClick={() => setRoute('products')} />}
+          {can(user, 'view_operators') && <NavBtn icon={Users} label="Operators" active={route==='employees'} onClick={() => setRoute('employees')} />}
+          {can(user, 'view_history') && <NavBtn icon={History} label="History" active={route==='history'} onClick={() => setRoute('history')} />}
+          {can(user, 'view_reports') && <NavBtn icon={TrendingDown} label="Reports" active={route==='reports'} onClick={() => setRoute('reports')} />}
+          {can(user, 'view_reports') && <NavBtn icon={Archive} label="Monthly Reports" active={route==='monthly'} onClick={() => setRoute('monthly')} />}
+          {user?.role === 'admin' && <div className="my-2 border-t border-zinc-800"></div>}
+          {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
+          {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
+          <div className="mt-auto text-xs text-zinc-600 px-2 py-2">v3.3.5 · Cloud + Auth</div>
         </nav>
 
         <main className="flex-1 overflow-auto">
-          {route === 'scan' && <ScanScreen products={products} employees={employees} barcodes={barcodes} beeper={beeper} refresh={refresh} />}
-          {route === 'dashboard' && <Dashboard products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} />}
-          {route === 'products' && <ProductsScreen products={products} barcodes={barcodes} beeper={beeper} refresh={refresh} />}
-          {route === 'employees' && <EmployeesScreen employees={employees} barcodes={barcodes} movements={movements} refresh={refresh} />}
-          {route === 'history' && <HistoryScreen employees={employees} periods={periods} currentPeriod={currentPeriod} />}
-          {route === 'reports' && <ReportsScreen products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} onMonthClosed={refresh} />}
-          {route === 'monthly' && <MonthlyReportsScreen periods={periods} employees={employees} products={products} />}
-          {route === 'users' && <UsersScreen currentUser={user} />}
-          {route === 'settings' && <SettingsScreen refresh={refresh} branding={branding} refreshBranding={refreshBranding} />}
+          {route === 'scan' && can(user, 'issue_stock') && <ScanScreen products={products} employees={employees} barcodes={barcodes} beeper={beeper} refresh={refresh} />}
+          {route === 'dashboard' && can(user, 'view_dashboard') && <Dashboard products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} />}
+          {route === 'products' && can(user, 'view_products') && <ProductsScreen products={products} barcodes={barcodes} beeper={beeper} refresh={refresh} canEdit={user?.role === 'admin'} canReceive={can(user, 'receive_stock')} />}
+          {route === 'employees' && can(user, 'view_operators') && <EmployeesScreen employees={employees} barcodes={barcodes} movements={movements} refresh={refresh} canEdit={user?.role === 'admin'} />}
+          {route === 'history' && can(user, 'view_history') && <HistoryScreen employees={employees} periods={periods} currentPeriod={currentPeriod} />}
+          {route === 'reports' && can(user, 'view_reports') && <ReportsScreen products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} onMonthClosed={refresh} canCloseMonth={user?.role === 'admin'} />}
+          {route === 'monthly' && can(user, 'view_reports') && <MonthlyReportsScreen periods={periods} employees={employees} products={products} />}
+          {route === 'users' && user?.role === 'admin' && <UsersScreen currentUser={user} />}
+          {route === 'settings' && user?.role === 'admin' && <SettingsScreen refresh={refresh} branding={branding} refreshBranding={refreshBranding} user={user} />}
+          {!hasAccessTo(user, route) && (
+            <div className="p-8 text-center text-zinc-500">You don't have access to this page.</div>
+          )}
         </main>
       </div>
     </div>
@@ -821,7 +886,7 @@ function StatCard({ label, value, icon: Icon, accent }) {
 // ============================================================
 // PRODUCTS (mostly unchanged from v3)
 // ============================================================
-function ProductsScreen({ products, barcodes, beeper, refresh }) {
+function ProductsScreen({ products, barcodes, beeper, refresh, canEdit = true, canReceive = true }) {
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState(null);
   const [receiving, setReceiving] = useState(null);
@@ -881,10 +946,12 @@ function ProductsScreen({ products, barcodes, beeper, refresh }) {
     <div className="p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">Products</h2>
-        <button onClick={() => setEditing('new')}
-          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
-          <Plus className="w-4 h-4" /> New Product
-        </button>
+        {canEdit && (
+          <button onClick={() => setEditing('new')}
+            className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+            <Plus className="w-4 h-4" /> New Product
+          </button>
+        )}
       </div>
       <div className="relative mb-4">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
@@ -930,10 +997,16 @@ function ProductsScreen({ products, barcodes, beeper, refresh }) {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1 justify-end items-center">
-                        <button onClick={() => setReceiving(p.id)}
-                          className="text-xs bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 px-2 py-1 rounded">+Stock</button>
-                        <button onClick={() => setEditing(p)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
-                        <button onClick={() => setDeleting(p)} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                        {canReceive && (
+                          <button onClick={() => setReceiving(p.id)}
+                            className="text-xs bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 px-2 py-1 rounded">+Stock</button>
+                        )}
+                        {canEdit && (
+                          <>
+                            <button onClick={() => setEditing(p)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                            <button onClick={() => setDeleting(p)} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1057,7 +1130,7 @@ function ReceiveStockModal({ product, onSave, onClose }) {
 // ============================================================
 // OPERATORS (unchanged)
 // ============================================================
-function EmployeesScreen({ employees, barcodes, movements, refresh }) {
+function EmployeesScreen({ employees, barcodes, movements, refresh, canEdit = true }) {
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
 
@@ -1088,10 +1161,12 @@ function EmployeesScreen({ employees, barcodes, movements, refresh }) {
           <h2 className="text-2xl font-bold">Operators</h2>
           <p className="text-sm text-zinc-500 mt-1">Workshop staff who scan their badge to take stock. They don't log in to this system.</p>
         </div>
-        <button onClick={() => setEditing('new')}
-          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
-          <Plus className="w-4 h-4" /> New Operator
-        </button>
+        {canEdit && (
+          <button onClick={() => setEditing('new')}
+            className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+            <Plus className="w-4 h-4" /> New Operator
+          </button>
+        )}
       </div>
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
         {employees.length === 0 ? (
@@ -1126,8 +1201,12 @@ function EmployeesScreen({ employees, barcodes, movements, refresh }) {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1 justify-end">
-                        <button onClick={() => setEditing(e)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
-                        <button onClick={() => setDeleting({ emp: e, hasHistory })} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                        {canEdit && (
+                          <>
+                            <button onClick={() => setEditing(e)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                            <button onClick={() => setDeleting({ emp: e, hasHistory })} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1369,7 +1448,7 @@ function HistoryScreen({ employees, periods, currentPeriod }) {
 // ============================================================
 // REPORTS - current period, with "Close Month" button
 // ============================================================
-function ReportsScreen({ products, movements, employees, currentPeriod, onMonthClosed }) {
+function ReportsScreen({ products, movements, employees, currentPeriod, onMonthClosed, canCloseMonth = true }) {
   const [closing, setClosing] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [message, setMessage] = useState(null);
@@ -1456,11 +1535,13 @@ function ReportsScreen({ products, movements, employees, currentPeriod, onMonthC
             </p>
           )}
         </div>
-        <button onClick={() => setConfirmClose(true)} disabled={closing}
-          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-bold px-4 py-2.5 rounded-md">
-          {closing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarCheck className="w-4 h-4" />}
-          Close Month
-        </button>
+        {canCloseMonth && (
+          <button onClick={() => setConfirmClose(true)} disabled={closing}
+            className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-bold px-4 py-2.5 rounded-md">
+            {closing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarCheck className="w-4 h-4" />}
+            Close Month
+          </button>
+        )}
       </div>
 
       {message && (
@@ -1811,84 +1892,182 @@ function MonthlyReportsScreen({ periods, employees, products }) {
 // USERS SCREEN (unchanged)
 // ============================================================
 function UsersScreen({ currentUser }) {
-  const [users, setUsers] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null); // { mode: 'add'|'edit', accountType: 'admin'|'user', account?: {} }
   const [changingPw, setChangingPw] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [message, setMessage] = useState(null);
 
   const load = async () => {
-    try { setUsers(await apiGet('/users')); } catch (err) { console.error(err); } finally { setLoading(false); }
+    try { setAccounts(await apiGet('/users')); }
+    catch (err) { console.error(err); }
+    finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
   const showMsg = (type, text) => { setMessage({ type, text }); setTimeout(() => setMessage(null), 4000); };
 
-  const createUser = async (username, password) => {
-    try { await apiPost('/users', { username, password }); showMsg('ok', `Admin "${username}" created`); setAdding(false); await load(); }
-    catch (err) { showMsg('err', err.message); throw err; }
+  const saveAccount = async (data) => {
+    try {
+      if (editing.mode === 'add') {
+        await apiPost('/users', data);
+        showMsg('ok', `${data.role === 'admin' ? 'Admin' : 'User'} "${data.username}" created`);
+      } else {
+        // update role/permissions
+        await apiPut(`/users/${editing.account.id}`, { role: data.role, permissions: data.permissions });
+        showMsg('ok', `Account "${data.username}" updated`);
+      }
+      setEditing(null);
+      await load();
+    } catch (err) { showMsg('err', err.message); throw err; }
   };
+
   const changePassword = async (userId, newPassword, currentPassword) => {
-    try { await apiPost(`/users/${userId}/password`, { newPassword, currentPassword }); showMsg('ok', 'Password updated'); setChangingPw(null); }
-    catch (err) { showMsg('err', err.message); throw err; }
+    try {
+      await apiPost(`/users/${userId}/password`, { newPassword, currentPassword });
+      showMsg('ok', 'Password updated');
+      setChangingPw(null);
+    } catch (err) { showMsg('err', err.message); throw err; }
   };
-  const deleteUser = async () => {
-    try { await apiDelete(`/users/${deleting.id}`); showMsg('ok', `Admin "${deleting.username}" deleted`); setDeleting(null); await load(); }
-    catch (err) { showMsg('err', err.message); setDeleting(null); }
+
+  const deleteAccount = async () => {
+    try {
+      await apiDelete(`/users/${deleting.id}`);
+      showMsg('ok', `Account "${deleting.username}" deleted`);
+      setDeleting(null);
+      await load();
+    } catch (err) { showMsg('err', err.message); setDeleting(null); }
   };
+
+  const admins = accounts.filter(a => a.role === 'admin');
+  const users = accounts.filter(a => a.role !== 'admin');
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold">Admin Users</h2>
-          <p className="text-sm text-zinc-500 mt-1">People who can log in and manage this system. Not the same as workshop operators.</p>
-        </div>
-        <button onClick={() => setAdding(true)}
-          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
-          <Plus className="w-4 h-4" /> New Admin
-        </button>
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold">Accounts</h2>
+        <p className="text-sm text-zinc-500 mt-1">People who can log in. Workshop staff who only scan badges are managed under Operators.</p>
       </div>
+
       {message && (
         <div className={`mb-4 px-4 py-3 rounded-md text-sm ${
           message.type === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border border-red-500/30 text-red-300'
         }`}>{message.text}</div>
       )}
+
+      {loading ? (
+        <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+      ) : (
+        <div className="space-y-6">
+          {/* Admins section */}
+          <AccountSection
+            title="Admins"
+            description="Full access to everything in the system."
+            accentClass="text-amber-400"
+            icon={UserCog}
+            accounts={admins}
+            currentUser={currentUser}
+            onAdd={() => setEditing({ mode: 'add', accountType: 'admin' })}
+            onEdit={(acc) => setEditing({ mode: 'edit', accountType: 'admin', account: acc })}
+            onChangePassword={setChangingPw}
+            onDelete={setDeleting}
+            addButtonLabel="New Admin"
+          />
+
+          {/* Users section */}
+          <AccountSection
+            title="Users"
+            description="Limited access — only the permissions you tick when creating the account."
+            accentClass="text-sky-400"
+            icon={UserCog}
+            accounts={users}
+            currentUser={currentUser}
+            onAdd={() => setEditing({ mode: 'add', accountType: 'user' })}
+            onEdit={(acc) => setEditing({ mode: 'edit', accountType: 'user', account: acc })}
+            onChangePassword={setChangingPw}
+            onDelete={setDeleting}
+            addButtonLabel="New User"
+          />
+        </div>
+      )}
+
+      {editing && (
+        <AccountEditor
+          editing={editing}
+          onSave={saveAccount}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {changingPw && <ChangePasswordModal user={changingPw} isSelf={changingPw.id === currentUser.id} onSave={changePassword} onClose={() => setChangingPw(null)} />}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete "${deleting.username}"?`}
+          message="They will no longer be able to log in. Any current sessions will end immediately."
+          confirmLabel="Delete"
+          onConfirm={deleteAccount}
+          onCancel={() => setDeleting(null)} />
+      )}
+    </div>
+  );
+}
+
+function AccountSection({ title, description, accentClass, icon: Icon, accounts, currentUser, onAdd, onEdit, onChangePassword, onDelete, addButtonLabel }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <h3 className={`text-lg font-semibold flex items-center gap-2 ${accentClass}`}>
+            <Icon className="w-5 h-5" /> {title} <span className="text-zinc-500 text-sm font-normal">({accounts.length})</span>
+          </h3>
+          <p className="text-xs text-zinc-500">{description}</p>
+        </div>
+        <button onClick={onAdd}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-3 py-1.5 rounded-md text-sm">
+          <Plus className="w-4 h-4" /> {addButtonLabel}
+        </button>
+      </div>
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-        {loading ? (
-          <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+        {accounts.length === 0 ? (
+          <div className="p-6 text-center text-zinc-500 text-sm">None yet.</div>
         ) : (
           <table className="w-full">
             <thead className="text-xs text-zinc-500 uppercase tracking-wide">
               <tr>
-                <th className="text-left px-4 py-3">Username</th>
-                <th className="text-left px-4 py-3">Created</th>
-                <th className="text-left px-4 py-3">Last Login</th>
+                <th className="text-left px-4 py-2">Username</th>
+                <th className="text-left px-4 py-2">Permissions</th>
+                <th className="text-left px-4 py-2">Last login</th>
                 <th className="w-44"></th>
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
+              {accounts.map(u => (
                 <tr key={u.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <UserCog className="w-4 h-4 text-amber-500" />
                       <span className="font-medium">{u.username}</span>
                       {u.id === currentUser.id && <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded">you</span>}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-sm text-zinc-400">{fmtDateTime(u.createdAt)}</td>
+                  <td className="px-4 py-3 text-xs text-zinc-400">
+                    {u.role === 'admin'
+                      ? <span className="text-amber-400">Full access</span>
+                      : u.permissions && u.permissions.length > 0
+                        ? `${u.permissions.length} permission${u.permissions.length === 1 ? '' : 's'}`
+                        : <span className="text-red-400">No permissions</span>}
+                  </td>
                   <td className="px-4 py-3 text-sm text-zinc-400">{fmtDateTime(u.lastLoginAt)}</td>
                   <td className="px-4 py-3">
                     <div className="flex gap-1 justify-end items-center">
-                      <button onClick={() => setChangingPw(u)}
-                        className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded flex items-center gap-1">
+                      <button onClick={() => onEdit(u)} title="Edit role / permissions"
+                        className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                      <button onClick={() => onChangePassword(u)}
+                        className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2 py-1 rounded flex items-center gap-1"
+                        title={u.id === currentUser.id ? 'Change Password' : 'Reset Password'}>
                         <KeyRound className="w-3.5 h-3.5" />
-                        {u.id === currentUser.id ? 'Change Password' : 'Reset Password'}
                       </button>
                       {u.id !== currentUser.id && (
-                        <button onClick={() => setDeleting(u)} className="text-zinc-400 hover:text-red-400 p-1">
+                        <button onClick={() => onDelete(u)} className="text-zinc-400 hover:text-red-400 p-1">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       )}
@@ -1900,64 +2079,123 @@ function UsersScreen({ currentUser }) {
           </table>
         )}
       </div>
-      {adding && <AddAdminModal onSave={createUser} onClose={() => setAdding(false)} />}
-      {changingPw && <ChangePasswordModal user={changingPw} isSelf={changingPw.id === currentUser.id} onSave={changePassword} onClose={() => setChangingPw(null)} />}
-      {deleting && (
-        <ConfirmDialog
-          title={`Delete admin "${deleting.username}"?`}
-          message="This user will no longer be able to log in. Any current sessions for them will end immediately."
-          confirmLabel="Delete Admin"
-          onConfirm={deleteUser}
-          onCancel={() => setDeleting(null)} />
-      )}
     </div>
   );
 }
 
-function AddAdminModal({ onSave, onClose }) {
-  const [username, setUsername] = useState('');
+function AccountEditor({ editing, onSave, onClose }) {
+  const isAdd = editing.mode === 'add';
+  const initialRole = editing.accountType || (editing.account?.role || 'user');
+  const initialPerms = editing.account?.permissions || [];
+
+  const [username, setUsername] = useState(editing.account?.username || '');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [showPw, setShowPw] = useState(false);
+  const [role, setRole] = useState(initialRole);
+  const [permissions, setPermissions] = useState(initialPerms);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  const togglePerm = (id) => {
+    setPermissions(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  };
+
   const submit = async () => {
     setErr(null);
-    if (!username.trim() || username.length < 3) return setErr('Username must be at least 3 characters');
-    if (password.length < 6) return setErr('Password must be at least 6 characters');
-    if (password !== confirm) return setErr('Passwords do not match');
+    if (isAdd) {
+      if (!username.trim() || username.length < 3) return setErr('Username must be at least 3 characters');
+      if (password.length < 6) return setErr('Password must be at least 6 characters');
+      if (password !== confirm) return setErr('Passwords do not match');
+    }
     setBusy(true);
-    try { await onSave(username.trim(), password); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    try {
+      await onSave({
+        username: username.trim(),
+        password: isAdd ? password : undefined,
+        role,
+        permissions: role === 'admin' ? [] : permissions,
+      });
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
   };
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-md">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-lg max-h-[90vh] overflow-auto">
         <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
-          <h3 className="text-lg font-bold">New Admin User</h3>
+          <h3 className="text-lg font-bold">
+            {isAdd ? (role === 'admin' ? 'New Admin' : 'New User') : `Edit "${username}"`}
+          </h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5 space-y-4">
-          <Field label="Username"><input value={username} onChange={e => setUsername(e.target.value)} className="input" autoFocus /></Field>
-          <Field label="Password (min 6 characters)">
-            <div className="relative">
-              <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} className="input pr-10" />
-              <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
-                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
+          <Field label="Username">
+            <input value={username} onChange={e => setUsername(e.target.value)} className="input" autoFocus disabled={!isAdd} />
+          </Field>
+
+          {isAdd && (
+            <>
+              <Field label="Password (min 6 characters)">
+                <div className="relative">
+                  <input type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} className="input pr-10" />
+                  <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                    {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </Field>
+              <Field label="Confirm Password">
+                <input type={showPw ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} className="input" />
+              </Field>
+            </>
+          )}
+
+          <Field label="Account Type">
+            <div className="flex gap-2">
+              <button onClick={() => setRole('user')}
+                className={`flex-1 px-4 py-2 rounded-md border text-sm font-medium ${
+                  role === 'user' ? 'border-sky-500 bg-sky-500/10 text-sky-200' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                }`}>User</button>
+              <button onClick={() => setRole('admin')}
+                className={`flex-1 px-4 py-2 rounded-md border text-sm font-medium ${
+                  role === 'admin' ? 'border-amber-500 bg-amber-500/10 text-amber-200' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+                }`}>Admin</button>
             </div>
           </Field>
-          <Field label="Confirm Password">
-            <input type={showPw ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} className="input" />
-          </Field>
+
+          {role === 'admin' ? (
+            <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded p-3 text-sm">
+              Admins have full access to everything. No permissions to tick.
+            </div>
+          ) : (
+            <Field label="Permissions">
+              <div className="space-y-1 bg-zinc-950 border border-zinc-800 rounded-md p-3">
+                {ALL_PERMISSIONS.map(perm => (
+                  <label key={perm.id} className="flex items-center gap-2 py-1 cursor-pointer hover:bg-zinc-900 px-2 rounded">
+                    <input
+                      type="checkbox"
+                      checked={permissions.includes(perm.id)}
+                      onChange={() => togglePerm(perm.id)}
+                      className="w-4 h-4 accent-amber-500"
+                    />
+                    <span className="text-sm">{perm.label}</span>
+                  </label>
+                ))}
+                {permissions.length === 0 && (
+                  <div className="text-xs text-red-400 mt-2 px-2">⚠️ User won't be able to do anything until you tick at least one box.</div>
+                )}
+              </div>
+            </Field>
+          )}
+
           {err && <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-3 py-2 rounded-md text-sm">{err}</div>}
         </div>
         <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
           <button onClick={submit} disabled={busy}
             className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-semibold rounded-md flex items-center gap-2">
-            {busy && <Loader2 className="w-4 h-4 animate-spin" />} Create Admin
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+            {isAdd ? `Create ${role === 'admin' ? 'Admin' : 'User'}` : 'Save Changes'}
           </button>
         </div>
       </div>
