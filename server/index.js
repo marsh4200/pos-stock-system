@@ -1388,6 +1388,16 @@ app.get('/api/updater/status', (req, res) => {
   });
 });
 
+// Dismiss the "done" / "failed" banner — resets state back to idle
+app.post('/api/updater/dismiss', requirePermission('apply_updates'), (req, res) => {
+  const state = readUpdaterState();
+  if (state === 'running' || state === 'rolling-back') {
+    return res.status(409).json({ error: 'An update is still in progress.' });
+  }
+  try { fs.writeFileSync(UPDATER_STATE, 'idle'); } catch {}
+  res.json({ ok: true });
+});
+
 // Full changelog
 app.get('/api/updater/changelog', (req, res) => {
   res.type('text/markdown').send(readChangelog());
