@@ -116,6 +116,33 @@ db.exec(`
     totalItems INTEGER DEFAULT 0
   );
 
+  -- v3.4.0: in-house tools (check-out / check-in)
+  CREATE TABLE IF NOT EXISTS tools (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    serial TEXT,                       -- serial / asset tag (optional)
+    category TEXT,
+    location TEXT,
+    overdueAfterDays INTEGER DEFAULT 1,
+    defective INTEGER DEFAULT 0,       -- 0/1 — defective blocks checkout
+    defectiveNote TEXT,                -- last reason it was marked defective
+    active INTEGER DEFAULT 1,
+    createdAt TEXT,
+    -- denormalized "current status" for fast lookup
+    currentEmployeeId TEXT,            -- NULL if available, else who has it
+    checkedOutAt TEXT                  -- NULL if available
+  );
+
+  -- Audit log of every check-out / check-in event
+  CREATE TABLE IF NOT EXISTS tool_movements (
+    id TEXT PRIMARY KEY,
+    toolId TEXT NOT NULL,
+    employeeId TEXT,                   -- who did it (operator)
+    type TEXT NOT NULL,                -- 'CHECKOUT' | 'CHECKIN' | 'DEFECTIVE_FLAG' | 'DEFECTIVE_CLEAR'
+    notes TEXT,
+    createdAt TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_movements_created ON movements(createdAt);
   CREATE INDEX IF NOT EXISTS idx_movements_tx ON movements(transactionId);
   CREATE INDEX IF NOT EXISTS idx_movements_emp ON movements(employeeId);
@@ -136,6 +163,15 @@ ensureColumn('movements', 'periodId', 'TEXT');
 // v3.3.5: users get a role + permissions list
 ensureColumn('users', 'role', "TEXT NOT NULL DEFAULT 'admin'");
 ensureColumn('users', 'permissions', "TEXT NOT NULL DEFAULT '[]'");
+// v3.4.0: barcodes can also point at a tool (for in-house tool tracking)
+ensureColumn('barcodes', 'toolId', 'TEXT');
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_tool_mov_tool ON tool_movements(toolId);
+  CREATE INDEX IF NOT EXISTS idx_tool_mov_emp ON tool_movements(employeeId);
+  CREATE INDEX IF NOT EXISTS idx_tool_mov_created ON tool_movements(createdAt);
+  CREATE INDEX IF NOT EXISTS idx_barcodes_tool ON barcodes(toolId);
+`);
 
 // Backfill: any existing user from before v3.3.5 stays admin (this is the default,
 // so nothing to do unless we ever want to migrate). All new admins/users from now
@@ -683,10 +719,10 @@ app.get('/api/barcodes', (req, res) => {
 });
 
 app.post('/api/barcodes', requireAdmin, (req, res) => {
-  const { value, productId, employeeId } = req.body;
+  const { value, productId, employeeId, toolId } = req.body;
   try {
-    db.prepare('INSERT INTO barcodes (value, productId, employeeId) VALUES (?, ?, ?)')
-      .run(value, productId || null, employeeId || null);
+    db.prepare('INSERT INTO barcodes (value, productId, employeeId, toolId) VALUES (?, ?, ?, ?)')
+      .run(value, productId || null, employeeId || null, toolId || null);
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: 'Barcode already exists' });
@@ -696,6 +732,177 @@ app.post('/api/barcodes', requireAdmin, (req, res) => {
 app.delete('/api/barcodes/:value', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM barcodes WHERE value = ?').run(req.params.value);
   res.json({ ok: true });
+});
+
+// ============================================================
+// TOOLS (in-house check-out / check-in) — v3.4.0
+// ============================================================
+// Admin only — both reading and writing — per user request:
+// "No — only Admins should handle tools"
+
+// List all tools with computed status
+app.get('/api/tools', requireAdmin, (req, res) => {
+  const rows = db.prepare(`SELECT * FROM tools ORDER BY name`).all();
+  res.json(rows.map(t => ({ ...t, defective: !!t.defective, active: t.active !== 0 })));
+});
+
+// Single tool with full history
+app.get('/api/tools/:id', requireAdmin, (req, res) => {
+  const tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(req.params.id);
+  if (!tool) return res.status(404).json({ error: 'Tool not found' });
+  const history = db.prepare(`
+    SELECT tm.*, e.name as employeeName, e.code as employeeCode
+    FROM tool_movements tm
+    LEFT JOIN employees e ON e.id = tm.employeeId
+    WHERE tm.toolId = ?
+    ORDER BY tm.createdAt DESC
+  `).all(req.params.id);
+  res.json({ ...tool, defective: !!tool.defective, active: tool.active !== 0, history });
+});
+
+// Create tool
+app.post('/api/tools', requireAdmin, (req, res) => {
+  const t = req.body || {};
+  if (!t.name) return res.status(400).json({ error: 'Name is required' });
+  const id = t.id || uid();
+  db.prepare(`INSERT INTO tools
+    (id, name, serial, category, location, overdueAfterDays, defective, defectiveNote, active, createdAt, currentEmployeeId, checkedOutAt)
+    VALUES (@id, @name, @serial, @category, @location, @overdueAfterDays, 0, NULL, 1, @createdAt, NULL, NULL)`)
+    .run({
+      id,
+      name: t.name,
+      serial: t.serial || '',
+      category: t.category || '',
+      location: t.location || '',
+      overdueAfterDays: Number.isFinite(Number(t.overdueAfterDays)) ? Number(t.overdueAfterDays) : 1,
+      createdAt: new Date().toISOString(),
+    });
+  // Optional initial barcode
+  if (t._barcode) {
+    try {
+      db.prepare('INSERT INTO barcodes (value, productId, employeeId, toolId) VALUES (?, NULL, NULL, ?)').run(t._barcode, id);
+    } catch {}
+  }
+  res.json({ ok: true, id });
+});
+
+// Update tool (admin only — not the checked-out state, that's via check-in/out endpoints)
+app.put('/api/tools/:id', requireAdmin, (req, res) => {
+  const t = req.body || {};
+  const existing = db.prepare('SELECT * FROM tools WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Tool not found' });
+  db.prepare(`UPDATE tools SET
+    name = @name, serial = @serial, category = @category, location = @location,
+    overdueAfterDays = @overdueAfterDays, active = @active
+    WHERE id = @id`).run({
+    id: req.params.id,
+    name: t.name ?? existing.name,
+    serial: t.serial ?? existing.serial,
+    category: t.category ?? existing.category,
+    location: t.location ?? existing.location,
+    overdueAfterDays: Number.isFinite(Number(t.overdueAfterDays)) ? Number(t.overdueAfterDays) : existing.overdueAfterDays,
+    active: t.active === false ? 0 : 1,
+  });
+  res.json({ ok: true });
+});
+
+// Delete tool (also wipes its barcodes; history is preserved as orphan rows)
+app.delete('/api/tools/:id', requireAdmin, (req, res) => {
+  const tx = db.transaction((id) => {
+    db.prepare('DELETE FROM tools WHERE id = ?').run(id);
+    db.prepare('DELETE FROM barcodes WHERE toolId = ?').run(id);
+  });
+  tx(req.params.id);
+  res.json({ ok: true });
+});
+
+// Toggle defective flag
+app.post('/api/tools/:id/defective', requireAdmin, (req, res) => {
+  const tool = db.prepare('SELECT * FROM tools WHERE id = ?').get(req.params.id);
+  if (!tool) return res.status(404).json({ error: 'Tool not found' });
+  const { defective, note, employeeId } = req.body || {};
+  const flagAs = defective ? 1 : 0;
+  db.prepare('UPDATE tools SET defective = ?, defectiveNote = ? WHERE id = ?')
+    .run(flagAs, defective ? (note || tool.defectiveNote || null) : null, req.params.id);
+  db.prepare('INSERT INTO tool_movements (id, toolId, employeeId, type, notes, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(uid(), req.params.id, employeeId || null, flagAs ? 'DEFECTIVE_FLAG' : 'DEFECTIVE_CLEAR', note || null, new Date().toISOString());
+  res.json({ ok: true });
+});
+
+// === Core check-out / check-in (smart scan) ===
+// Body: { toolBarcode, employeeBarcode?, employeeId?, notes? }
+// Looks up the tool by barcode; if it's available -> checkout; if it's out -> checkin.
+app.post('/api/tools/scan', requireAdmin, (req, res) => {
+  const { toolBarcode, employeeBarcode, employeeId: directEmployeeId, notes } = req.body || {};
+  if (!toolBarcode) return res.status(400).json({ error: 'Tool barcode required' });
+
+  // Resolve tool
+  const toolBc = db.prepare('SELECT * FROM barcodes WHERE value = ? AND toolId IS NOT NULL').get(toolBarcode);
+  if (!toolBc) return res.status(404).json({ error: `Unknown tool barcode: ${toolBarcode}` });
+  const tool = db.prepare('SELECT * FROM tools WHERE id = ? AND active = 1').get(toolBc.toolId);
+  if (!tool) return res.status(404).json({ error: 'Tool not found or inactive' });
+
+  // Resolve operator — either from barcode or direct ID
+  let employeeId = directEmployeeId || null;
+  if (!employeeId && employeeBarcode) {
+    const empBc = db.prepare('SELECT * FROM barcodes WHERE value = ? AND employeeId IS NOT NULL').get(employeeBarcode);
+    if (!empBc) return res.status(404).json({ error: `Unknown operator badge: ${employeeBarcode}` });
+    employeeId = empBc.employeeId;
+  }
+
+  const isAvailable = tool.currentEmployeeId === null;
+  const now = new Date().toISOString();
+
+  if (isAvailable) {
+    // === CHECKOUT ===
+    if (tool.defective) return res.status(400).json({ error: `Tool is flagged defective: ${tool.defectiveNote || 'no reason given'}` });
+    if (!employeeId) return res.status(400).json({ error: 'Operator required to check out' });
+    const emp = db.prepare('SELECT * FROM employees WHERE id = ? AND active = 1').get(employeeId);
+    if (!emp) return res.status(404).json({ error: 'Operator not found or inactive' });
+
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE tools SET currentEmployeeId = ?, checkedOutAt = ? WHERE id = ?')
+        .run(employeeId, now, tool.id);
+      db.prepare('INSERT INTO tool_movements (id, toolId, employeeId, type, notes, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(uid(), tool.id, employeeId, 'CHECKOUT', notes || null, now);
+    });
+    tx();
+    res.json({ ok: true, action: 'checkout', tool: { ...tool, currentEmployeeId: employeeId, checkedOutAt: now }, operator: emp });
+  } else {
+    // === CHECKIN ===
+    // We allow check-in regardless of which operator is bringing it back
+    const tx = db.transaction(() => {
+      db.prepare('UPDATE tools SET currentEmployeeId = NULL, checkedOutAt = NULL WHERE id = ?').run(tool.id);
+      db.prepare('INSERT INTO tool_movements (id, toolId, employeeId, type, notes, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(uid(), tool.id, employeeId || tool.currentEmployeeId, 'CHECKIN', notes || null, now);
+      // If a defect note was attached on check-in, auto-flag defective
+      if (notes && /defect|broken|damag|fault|not work/i.test(notes)) {
+        db.prepare('UPDATE tools SET defective = 1, defectiveNote = ? WHERE id = ?').run(notes, tool.id);
+      }
+    });
+    tx();
+    const refreshed = db.prepare('SELECT * FROM tools WHERE id = ?').get(tool.id);
+    res.json({ ok: true, action: 'checkin', tool: { ...refreshed, defective: !!refreshed.defective }, previouslyCheckedOutTo: tool.currentEmployeeId });
+  }
+});
+
+// Recent tool movements (across all tools) — for dashboard/history view
+app.get('/api/tool-movements', requireAdmin, (req, res) => {
+  const { toolId, employeeId, limit } = req.query;
+  const lim = Math.min(Number(limit) || 200, 1000);
+  let sql = `
+    SELECT tm.*, t.name as toolName, t.serial as toolSerial,
+           e.name as employeeName, e.code as employeeCode
+    FROM tool_movements tm
+    LEFT JOIN tools t ON t.id = tm.toolId
+    LEFT JOIN employees e ON e.id = tm.employeeId
+    WHERE 1=1`;
+  const params = [];
+  if (toolId) { sql += ' AND tm.toolId = ?'; params.push(toolId); }
+  if (employeeId) { sql += ' AND tm.employeeId = ?'; params.push(employeeId); }
+  sql += ' ORDER BY tm.createdAt DESC LIMIT ?';
+  params.push(lim);
+  res.json(db.prepare(sql).all(...params));
 });
 
 // ============================================================

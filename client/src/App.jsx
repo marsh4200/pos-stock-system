@@ -5,7 +5,7 @@ import {
   Edit3, Volume2, VolumeX, Download, Upload, Settings as SettingsIcon,
   ChevronDown, ChevronRight, Save, RefreshCw, Loader2, Lock, UserCog,
   KeyRound, Eye, EyeOff, Calendar, CalendarCheck, Archive, Image,
-  CloudDownload, RotateCcw, GitBranch, Sparkles
+  CloudDownload, RotateCcw, GitBranch, Sparkles, Wrench, ArrowDownToLine, ArrowUpFromLine, Clock
 } from 'lucide-react';
 
 // ============================================================
@@ -69,6 +69,7 @@ function hasAccessTo(user, route) {
     history: 'view_history',
     reports: 'view_reports',
     monthly: 'view_reports',
+    tools: null,    // admin only
     users: null,    // admin only
     settings: null, // admin only
   };
@@ -516,10 +517,11 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {can(user, 'view_reports') && <NavBtn icon={TrendingDown} label="Reports" active={route==='reports'} onClick={() => setRoute('reports')} />}
           {can(user, 'view_reports') && <NavBtn icon={Archive} label="Monthly Reports" active={route==='monthly'} onClick={() => setRoute('monthly')} />}
           {user?.role === 'admin' && <div className="my-2 border-t border-zinc-800"></div>}
+          {user?.role === 'admin' && <NavBtn icon={Wrench} label="Check-In/Out" active={route==='tools'} onClick={() => setRoute('tools')} />}
           {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
           {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
           <div className="mt-auto text-xs text-zinc-600 px-2 py-2">
-            v3.3.6 · Cloud + Auth · Open Source project by{" "}
+            v3.4.0 · Cloud + Auth · Open Source project by{" "}
             <a
               href="https://github.com/marsh4200"
               target="_blank"
@@ -539,6 +541,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {route === 'history' && can(user, 'view_history') && <HistoryScreen employees={employees} periods={periods} currentPeriod={currentPeriod} />}
           {route === 'reports' && can(user, 'view_reports') && <ReportsScreen products={products} movements={movements} employees={employees} currentPeriod={currentPeriod} onMonthClosed={refresh} canCloseMonth={user?.role === 'admin'} />}
           {route === 'monthly' && can(user, 'view_reports') && <MonthlyReportsScreen periods={periods} employees={employees} products={products} />}
+          {route === 'tools' && user?.role === 'admin' && <ToolsScreen employees={employees} beeper={beeper} />}
           {route === 'users' && user?.role === 'admin' && <UsersScreen currentUser={user} />}
           {route === 'settings' && user?.role === 'admin' && <SettingsScreen refresh={refresh} branding={branding} refreshBranding={refreshBranding} user={user} />}
           {!hasAccessTo(user, route) && (
@@ -1901,6 +1904,634 @@ function MonthlyReportsScreen({ periods, employees, products }) {
 // ============================================================
 // USERS SCREEN (unchanged)
 // ============================================================
+// ============================================================
+// TOOLS — in-house check-out / check-in (v3.4.0)
+// ============================================================
+function ToolsScreen({ employees, beeper }) {
+  const [tools, setTools] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('scan'); // 'scan' | 'list' | 'history'
+  const [message, setMessage] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try { setTools(await apiGet('/tools')); }
+    catch (err) { console.error(err); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  // Auto-refresh while on screen
+  useEffect(() => {
+    const id = setInterval(refresh, 10000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const showMsg = (type, text) => { setMessage({ type, text }); setTimeout(() => setMessage(null), 4000); };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2"><Wrench className="w-6 h-6 text-amber-500" /> Check-In/Out</h2>
+          <p className="text-sm text-zinc-500 mt-1">Track tools that operators borrow and return — drills, grinders, etc.</p>
+        </div>
+        <div className="flex gap-1 bg-zinc-900 border border-zinc-800 rounded-md p-1">
+          <button onClick={() => setTab('scan')}
+            className={`px-4 py-1.5 rounded text-sm font-medium ${tab === 'scan' ? 'bg-amber-500 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>
+            Scan
+          </button>
+          <button onClick={() => setTab('list')}
+            className={`px-4 py-1.5 rounded text-sm font-medium ${tab === 'list' ? 'bg-amber-500 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>
+            Tool List
+          </button>
+          <button onClick={() => setTab('history')}
+            className={`px-4 py-1.5 rounded text-sm font-medium ${tab === 'history' ? 'bg-amber-500 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>
+            History
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`mb-4 px-4 py-3 rounded-md text-sm ${
+          message.type === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border border-red-500/30 text-red-300'
+        }`}>{message.text}</div>
+      )}
+
+      {loading ? (
+        <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+      ) : (
+        <>
+          {tab === 'scan' && <ToolsScanTab tools={tools} employees={employees} beeper={beeper} onChange={refresh} showMsg={showMsg} />}
+          {tab === 'list' && <ToolsListTab tools={tools} employees={employees} onChange={refresh} showMsg={showMsg} />}
+          {tab === 'history' && <ToolsHistoryTab tools={tools} employees={employees} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ----- SCAN TAB (badge → tool, auto checkout/checkin) -----
+function ToolsScanTab({ tools, employees, beeper, onChange, showMsg }) {
+  const [activeOperator, setActiveOperator] = useState(null);
+  const [pendingCheckin, setPendingCheckin] = useState(null); // tool object awaiting optional note
+  const [checkinNote, setCheckinNote] = useState('');
+  const [manualScan, setManualScan] = useState('');
+  const [flash, setFlash] = useState(null);
+
+  const triggerFlash = (type, msg) => { setFlash({ type, msg }); setTimeout(() => setFlash(null), 1800); };
+
+  // Currently-out tools, for display
+  const outTools = tools.filter(t => t.currentEmployeeId);
+  const empById = Object.fromEntries(employees.map(e => [e.id, e]));
+
+  const submitScan = async (code) => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+
+    // No active operator yet → treat scan as operator badge
+    if (!activeOperator) {
+      const emp = employees.find(em => em.code === trimmed && em.active);
+      if (emp) {
+        setActiveOperator(emp);
+        beeper.employee();
+        triggerFlash('ok', `Operator: ${emp.name}`);
+      } else {
+        beeper.error();
+        triggerFlash('err', `Unknown operator badge: ${trimmed}`);
+      }
+      return;
+    }
+
+    // Have an operator → treat scan as tool barcode
+    try {
+      const result = await apiPost('/tools/scan', { toolBarcode: trimmed, employeeId: activeOperator.id });
+      if (result.action === 'checkout') {
+        beeper.confirm();
+        triggerFlash('ok', `✓ Checked OUT: ${result.tool.name}`);
+        await onChange();
+      } else if (result.action === 'checkin') {
+        beeper.success();
+        // Prompt for optional defect note
+        setPendingCheckin({ tool: result.tool, previousEmployeeId: result.previouslyCheckedOutTo });
+        await onChange();
+      }
+    } catch (e) {
+      beeper.error();
+      triggerFlash('err', e.message);
+    }
+  };
+
+  useBarcodeScanner(submitScan, true);
+
+  const submitManual = (e) => {
+    e.preventDefault();
+    if (manualScan.trim()) { submitScan(manualScan.trim()); setManualScan(''); }
+  };
+
+  const finishCheckin = async (defective) => {
+    if (!pendingCheckin) return;
+    try {
+      if (checkinNote.trim() || defective) {
+        // Update the most recent CHECKIN movement with the note via /tools/:id/defective (if defective)
+        // Or simpler: just re-call defective endpoint when needed
+        if (defective) {
+          await apiPost(`/tools/${pendingCheckin.tool.id}/defective`, {
+            defective: true,
+            note: checkinNote.trim() || 'Marked defective on return',
+            employeeId: activeOperator?.id,
+          });
+        }
+      }
+      triggerFlash('ok', `✓ Checked IN: ${pendingCheckin.tool.name}${defective ? ' (flagged defective)' : ''}`);
+      setPendingCheckin(null);
+      setCheckinNote('');
+      await onChange();
+    } catch (e) {
+      triggerFlash('err', e.message);
+    }
+  };
+
+  const skipCheckinNote = () => { setPendingCheckin(null); setCheckinNote(''); };
+
+  const endSession = () => { setActiveOperator(null); setPendingCheckin(null); setCheckinNote(''); };
+
+  if (!activeOperator) {
+    return (
+      <div className="relative">
+        {flash && (
+          <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg text-base font-semibold shadow-2xl ${
+            flash.type === 'ok' ? 'bg-emerald-500 text-zinc-900' : 'bg-red-500 text-white'
+          }`}>{flash.msg}</div>
+        )}
+        <div className="flex flex-col items-center justify-center py-16">
+          <div className="w-28 h-28 bg-zinc-900 border-2 border-amber-500 rounded-full flex items-center justify-center mb-6 animate-pulse">
+            <Wrench className="w-14 h-14 text-amber-500" />
+          </div>
+          <h3 className="text-2xl font-bold mb-1">Scan operator badge</h3>
+          <p className="text-zinc-500 mb-6">Then scan a tool barcode to check it out or in</p>
+          <form onSubmit={submitManual} className="flex gap-2 w-full max-w-md">
+            <input value={manualScan} onChange={e => setManualScan(e.target.value)}
+              placeholder="Or type operator code manually…"
+              className="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-4 py-3 text-base focus:outline-none focus:border-amber-500" />
+            <button type="submit" className="bg-zinc-800 hover:bg-zinc-700 px-5 rounded-md">Go</button>
+          </form>
+        </div>
+        {outTools.length > 0 && (
+          <div className="mt-8 max-w-3xl mx-auto">
+            <h4 className="text-sm font-semibold text-zinc-300 mb-2 flex items-center gap-2">
+              <ArrowUpFromLine className="w-4 h-4 text-red-400" /> Currently out ({outTools.length})
+            </h4>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+                  <tr><th className="text-left px-3 py-2">Tool</th><th className="text-left px-3 py-2">With</th><th className="text-right px-3 py-2">Since</th></tr>
+                </thead>
+                <tbody>
+                  {outTools.map(t => {
+                    const e = empById[t.currentEmployeeId];
+                    const outFor = Date.now() - new Date(t.checkedOutAt).getTime();
+                    const days = outFor / 86400000;
+                    const overdue = days > (t.overdueAfterDays || 1);
+                    return (
+                      <tr key={t.id} className="border-t border-zinc-800">
+                        <td className="px-3 py-2 font-medium">{t.name}</td>
+                        <td className="px-3 py-2 text-zinc-400">{e?.name || '—'}</td>
+                        <td className={`px-3 py-2 text-right text-xs ${overdue ? 'text-red-400 font-bold' : 'text-zinc-500'}`}>
+                          {fmtRelative(t.checkedOutAt)} {overdue && '⚠️'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Active operator — ready to scan tools
+  return (
+    <div className="relative">
+      {flash && (
+        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg text-base font-semibold shadow-2xl ${
+          flash.type === 'ok' ? 'bg-emerald-500 text-zinc-900' : 'bg-red-500 text-white'
+        }`}>{flash.msg}</div>
+      )}
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex items-center justify-between mb-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-amber-500 rounded-full flex items-center justify-center text-zinc-900 font-bold text-lg">
+            {activeOperator.name.split(' ').map(n => n[0]).join('').slice(0,2)}
+          </div>
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-wide">Active Session</div>
+            <div className="text-xl font-bold">{activeOperator.name}</div>
+            <div className="text-xs text-zinc-500">{activeOperator.code} · {activeOperator.role}</div>
+          </div>
+        </div>
+        <button onClick={endSession} className="flex items-center gap-2 text-zinc-400 hover:text-white px-3 py-2 rounded-md hover:bg-zinc-800">
+          <LogOut className="w-4 h-4" /> End Session
+        </button>
+      </div>
+
+      <div className="bg-amber-500/5 border border-amber-500/30 rounded-lg p-4 mb-4 flex items-center gap-3">
+        <Wrench className="w-6 h-6 text-amber-500 animate-pulse" />
+        <div className="text-amber-200">Scan a tool barcode — system will auto check it out or in</div>
+        <form onSubmit={submitManual} className="ml-auto flex gap-2">
+          <input value={manualScan} onChange={e => setManualScan(e.target.value)}
+            placeholder="Manual tool barcode…"
+            className="bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-amber-500" />
+          <button type="submit" className="bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-md text-sm">Scan</button>
+        </form>
+      </div>
+
+      {/* Check-in note prompt */}
+      {pendingCheckin && (
+        <div className="bg-emerald-500/10 border border-emerald-500/40 rounded-lg p-4 mb-4">
+          <div className="flex items-center gap-2 mb-3">
+            <ArrowDownToLine className="w-5 h-5 text-emerald-400" />
+            <div className="font-semibold text-emerald-200">{pendingCheckin.tool.name} checked IN</div>
+          </div>
+          <div className="text-sm text-zinc-400 mb-2">Add a note? (optional — leave blank if everything's fine)</div>
+          <textarea value={checkinNote} onChange={e => setCheckinNote(e.target.value)}
+            rows={2} className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+            placeholder="e.g. 'chuck wobbly', 'missing battery', 'all good'" />
+          <div className="mt-3 flex gap-2">
+            <button onClick={() => finishCheckin(false)}
+              className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-900 font-semibold rounded">Save Note & Continue</button>
+            <button onClick={() => finishCheckin(true)}
+              className="px-4 py-2 bg-red-500/30 hover:bg-red-500/40 text-red-200 font-semibold rounded flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4" /> Flag Defective
+            </button>
+            <button onClick={skipCheckinNote}
+              className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded">Skip</button>
+          </div>
+        </div>
+      )}
+
+      {/* Currently checked out to this operator */}
+      <div>
+        <h4 className="text-sm font-semibold text-zinc-300 mb-2">Currently with {activeOperator.name}</h4>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+          {tools.filter(t => t.currentEmployeeId === activeOperator.id).length === 0 ? (
+            <div className="p-6 text-center text-zinc-500 text-sm">No tools checked out to this operator.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+                <tr><th className="text-left px-4 py-2">Tool</th><th className="text-left px-4 py-2">Serial</th><th className="text-right px-4 py-2">Since</th></tr>
+              </thead>
+              <tbody>
+                {tools.filter(t => t.currentEmployeeId === activeOperator.id).map(t => {
+                  const outFor = Date.now() - new Date(t.checkedOutAt).getTime();
+                  const overdue = outFor / 86400000 > (t.overdueAfterDays || 1);
+                  return (
+                    <tr key={t.id} className="border-t border-zinc-800">
+                      <td className="px-4 py-2 font-medium">{t.name}</td>
+                      <td className="px-4 py-2 text-zinc-500 font-mono text-xs">{t.serial || '—'}</td>
+                      <td className={`px-4 py-2 text-right ${overdue ? 'text-red-400 font-bold' : 'text-zinc-400'}`}>
+                        {fmtRelative(t.checkedOutAt)} {overdue && '⚠️ overdue'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----- LIST TAB (add/edit/delete tools, view status) -----
+function ToolsListTab({ tools, employees, onChange, showMsg }) {
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [search, setSearch] = useState('');
+
+  const empById = Object.fromEntries(employees.map(e => [e.id, e]));
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return tools.filter(t =>
+      t.name.toLowerCase().includes(q) ||
+      (t.serial || '').toLowerCase().includes(q) ||
+      (t.category || '').toLowerCase().includes(q)
+    );
+  }, [tools, search]);
+
+  const saveTool = async (data) => {
+    try {
+      if (data.id) await apiPut(`/tools/${data.id}`, data);
+      else await apiPost('/tools', data);
+      setEditing(null);
+      await onChange();
+      showMsg('ok', data.id ? 'Tool updated' : 'Tool created');
+    } catch (err) { showMsg('err', err.message); }
+  };
+
+  const deleteTool = async () => {
+    try { await apiDelete(`/tools/${deleting.id}`); setDeleting(null); await onChange(); showMsg('ok', 'Tool deleted'); }
+    catch (err) { showMsg('err', err.message); }
+  };
+
+  const clearDefective = async (tool) => {
+    try { await apiPost(`/tools/${tool.id}/defective`, { defective: false }); await onChange(); showMsg('ok', `${tool.name} marked OK`); }
+    catch (err) { showMsg('err', err.message); }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 gap-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search tools…"
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-10 pr-4 py-2 focus:outline-none focus:border-amber-500" />
+        </div>
+        <button onClick={() => setEditing('new')}
+          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold px-4 py-2 rounded-md">
+          <Plus className="w-4 h-4" /> New Tool
+        </button>
+      </div>
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {tools.length === 0 ? (
+          <div className="p-12 text-center">
+            <Wrench className="w-12 h-12 text-zinc-700 mx-auto mb-3" />
+            <div className="text-zinc-400 font-medium mb-1">No tools yet</div>
+            <div className="text-zinc-600 text-sm">Click "New Tool" to add your first one</div>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-3">Tool</th>
+                <th className="text-left px-4 py-3">Serial</th>
+                <th className="text-left px-4 py-3">Category</th>
+                <th className="text-left px-4 py-3">Location</th>
+                <th className="text-left px-4 py-3">Status</th>
+                <th className="text-right px-4 py-3">Overdue After</th>
+                <th className="w-44"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(t => {
+                const holder = empById[t.currentEmployeeId];
+                const outFor = t.checkedOutAt ? (Date.now() - new Date(t.checkedOutAt).getTime()) / 86400000 : 0;
+                const overdue = outFor > (t.overdueAfterDays || 1);
+                return (
+                  <tr key={t.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                    <td className="px-4 py-3 font-medium">{t.name}</td>
+                    <td className="px-4 py-3 text-zinc-500 font-mono text-xs">{t.serial || '—'}</td>
+                    <td className="px-4 py-3 text-zinc-400 text-sm">{t.category || '—'}</td>
+                    <td className="px-4 py-3 text-zinc-400 text-sm">{t.location || '—'}</td>
+                    <td className="px-4 py-3 text-sm">
+                      {t.defective ? (
+                        <div>
+                          <span className="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded">DEFECTIVE</span>
+                          {t.defectiveNote && <div className="text-xs text-zinc-500 mt-1 italic">"{t.defectiveNote}"</div>}
+                        </div>
+                      ) : holder ? (
+                        <div>
+                          <span className={`text-xs px-2 py-0.5 rounded ${overdue ? 'bg-red-500/20 text-red-300' : 'bg-amber-500/20 text-amber-300'}`}>
+                            OUT{overdue && ' · OVERDUE'}
+                          </span>
+                          <div className="text-xs text-zinc-400 mt-1">with {holder.name} · {fmtRelative(t.checkedOutAt)}</div>
+                        </div>
+                      ) : (
+                        <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">AVAILABLE</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-zinc-400">{t.overdueAfterDays || 1}d</td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1 justify-end items-center">
+                        {t.defective && (
+                          <button onClick={() => clearDefective(t)}
+                            className="text-xs bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 px-2 py-1 rounded">
+                            Mark OK
+                          </button>
+                        )}
+                        <button onClick={() => setEditing(t)} className="text-zinc-400 hover:text-white p-1"><Edit3 className="w-4 h-4" /></button>
+                        <button onClick={() => setDeleting(t)} className="text-zinc-400 hover:text-red-400 p-1"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {editing && <ToolEditor tool={editing === 'new' ? null : editing} onSave={saveTool} onClose={() => setEditing(null)} />}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete "${deleting.name}"?`}
+          message="The tool and its barcodes are removed. History is kept but will show this as a deleted tool. Cannot be undone."
+          confirmLabel="Delete Tool"
+          onConfirm={deleteTool}
+          onCancel={() => setDeleting(null)} />
+      )}
+    </div>
+  );
+}
+
+function ToolEditor({ tool, onSave, onClose }) {
+  const [form, setForm] = useState(tool || {
+    name: '', serial: '', category: '', location: '', overdueAfterDays: 1, _barcode: '',
+  });
+  const [barcodes, setBarcodes] = useState([]);
+  const [newBc, setNewBc] = useState('');
+
+  const isEdit = !!tool;
+
+  useEffect(() => {
+    if (!tool) return;
+    // Fetch tool's barcodes
+    apiGet('/barcodes').then(all => {
+      setBarcodes(all.filter(b => b.toolId === tool.id));
+    }).catch(() => {});
+  }, [tool]);
+
+  const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const addBarcode = async () => {
+    if (!newBc.trim() || !tool) return;
+    try {
+      await apiPost('/barcodes', { value: newBc.trim(), toolId: tool.id });
+      const all = await apiGet('/barcodes');
+      setBarcodes(all.filter(b => b.toolId === tool.id));
+      setNewBc('');
+    } catch (e) { alert(e.message); }
+  };
+
+  const removeBarcode = async (value) => {
+    await apiDelete(`/barcodes/${encodeURIComponent(value)}`);
+    const all = await apiGet('/barcodes');
+    setBarcodes(all.filter(b => b.toolId === tool.id));
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg w-full max-w-2xl max-h-[90vh] overflow-auto">
+        <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 className="text-lg font-bold">{tool ? `Edit "${form.name}"` : 'New Tool'}</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 grid grid-cols-2 gap-4">
+          <Field label="Tool Name *" className="col-span-2">
+            <input value={form.name} onChange={e => upd('name', e.target.value)} className="input" placeholder="e.g. Cordless Drill 18V" />
+          </Field>
+          <Field label="Serial / Asset Tag">
+            <input value={form.serial} onChange={e => upd('serial', e.target.value)} className="input font-mono" />
+          </Field>
+          <Field label="Category">
+            <input value={form.category} onChange={e => upd('category', e.target.value)} className="input" placeholder="Power Tools, Hand Tools, etc." />
+          </Field>
+          <Field label="Storage Location">
+            <input value={form.location} onChange={e => upd('location', e.target.value)} className="input" placeholder="Shelf A2, Cabinet 3, etc." />
+          </Field>
+          <Field label="Overdue After (days)">
+            <input type="number" min="1" value={form.overdueAfterDays} onChange={e => upd('overdueAfterDays', Number(e.target.value) || 1)} className="input" />
+          </Field>
+
+          {!isEdit && (
+            <Field label="Initial Barcode (optional)" className="col-span-2">
+              <input value={form._barcode || ''} onChange={e => upd('_barcode', e.target.value)}
+                className="input font-mono" placeholder="Scan or type the barcode you'll stick on this tool" />
+            </Field>
+          )}
+
+          {isEdit && (
+            <div className="col-span-2 border-t border-zinc-800 pt-4">
+              <div className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Barcodes</div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {barcodes.length === 0 ? (
+                  <div className="text-sm text-red-400">⚠️ No barcodes — this tool can't be scanned</div>
+                ) : barcodes.map(b => (
+                  <div key={b.value} className="flex items-center gap-1 bg-zinc-800 text-sm font-mono px-2 py-1 rounded">
+                    {b.value}
+                    <button onClick={() => removeBarcode(b.value)} className="text-zinc-500 hover:text-red-400"><X className="w-3 h-3" /></button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input value={newBc} onChange={e => setNewBc(e.target.value)}
+                  className="input font-mono" placeholder="Scan or type a new barcode" />
+                <button onClick={addBarcode}
+                  className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md whitespace-nowrap text-sm">Add Barcode</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-zinc-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md">Cancel</button>
+          <button onClick={() => form.name.trim() && onSave(isEdit ? { ...form, id: tool.id } : form)}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 font-semibold rounded-md">
+            {isEdit ? 'Save Changes' : 'Create Tool'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----- HISTORY TAB -----
+function ToolsHistoryTab({ tools, employees }) {
+  const [filterTool, setFilterTool] = useState('');
+  const [filterEmp, setFilterEmp] = useState('');
+  const [movements, setMovements] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filterTool) params.set('toolId', filterTool);
+      if (filterEmp) params.set('employeeId', filterEmp);
+      params.set('limit', '500');
+      setMovements(await apiGet(`/tool-movements?${params.toString()}`));
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, [filterTool, filterEmp]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div>
+      <div className="flex gap-3 mb-4 items-end flex-wrap">
+        <Field label="Tool">
+          <select value={filterTool} onChange={e => setFilterTool(e.target.value)} className="input min-w-[200px]">
+            <option value="">All tools</option>
+            {tools.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Operator">
+          <select value={filterEmp} onChange={e => setFilterEmp(e.target.value)} className="input min-w-[200px]">
+            <option value="">All operators</option>
+            {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Field>
+        <button onClick={() => { setFilterTool(''); setFilterEmp(''); }}
+          className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-md text-sm">Reset</button>
+        <div className="ml-auto text-sm text-zinc-500 self-center">{movements.length} events</div>
+      </div>
+
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+        ) : movements.length === 0 ? (
+          <div className="p-12 text-center text-zinc-500 text-sm">No events found</div>
+        ) : (
+          <table className="w-full">
+            <thead className="text-xs text-zinc-500 uppercase tracking-wide">
+              <tr>
+                <th className="text-left px-4 py-2">When</th>
+                <th className="text-left px-4 py-2">Action</th>
+                <th className="text-left px-4 py-2">Tool</th>
+                <th className="text-left px-4 py-2">Operator</th>
+                <th className="text-left px-4 py-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movements.map(m => (
+                <tr key={m.id} className="border-t border-zinc-800 hover:bg-zinc-800/40">
+                  <td className="px-4 py-2 text-xs text-zinc-400">{fmtDateTime(m.createdAt)}</td>
+                  <td className="px-4 py-2">
+                    {m.type === 'CHECKOUT' && <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded inline-flex items-center gap-1"><ArrowUpFromLine className="w-3 h-3" /> OUT</span>}
+                    {m.type === 'CHECKIN' && <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded inline-flex items-center gap-1"><ArrowDownToLine className="w-3 h-3" /> IN</span>}
+                    {m.type === 'DEFECTIVE_FLAG' && <span className="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded">DEFECTIVE</span>}
+                    {m.type === 'DEFECTIVE_CLEAR' && <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded">CLEARED</span>}
+                  </td>
+                  <td className="px-4 py-2 font-medium">{m.toolName || <span className="text-zinc-600 italic">deleted tool</span>}</td>
+                  <td className="px-4 py-2 text-zinc-400">{m.employeeName || '—'}</td>
+                  <td className="px-4 py-2 text-zinc-400 text-sm italic">{m.notes || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Format a date as relative time ("2h ago", "3d ago")
+function fmtRelative(iso) {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 function UsersScreen({ currentUser }) {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);

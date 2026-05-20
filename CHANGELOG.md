@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.4.0 — 2026-05-18
+
+### New: In-house tool check-in/check-out 🔧
+
+A whole new **"Check-In/Out"** sidebar tab (admin only) for tracking physical tools that operators borrow and return — drills, grinders, measuring tools, etc. Distinct from Products (which is consumable stock).
+
+- **Smart scan workflow**: operator scans badge → scans tool → system auto-detects whether to check OUT (tool available) or IN (tool currently with that or any operator)
+- **Three sub-tabs**:
+  - **Scan**: the live check-out/in counter — same vibe as Issue Stock
+  - **Tool List**: add, edit, delete tools; assign barcodes; flag/clear defective; see live status (Available / Out / Defective / Overdue) at a glance
+  - **History**: full audit log of every event, filterable by tool and operator
+- **Per-tool overdue threshold** in days (default 1). Tools out beyond that show OVERDUE in red.
+- **Defective flag**: tools can be flagged on check-in or anytime from the Tool List. Defective tools cannot be checked out. Flag persists until an admin clicks "Mark OK".
+- **Notes on check-in**: optional free-text note logged with each return (e.g. "chuck wobbly", "missing battery").
+- **Auto-defective**: check-in notes containing words like "defect", "broken", "damaged", "fault" auto-flag the tool as defective.
+
+### Technical
+- New `tools` and `tool_movements` SQLite tables (auto-migrate on first start)
+- `barcodes` table now also supports `toolId` (a single barcode can map to product OR operator OR tool)
+- New REST endpoints under `/api/tools` and `/api/tool-movements` (all admin-only)
+
+---
+
 ## v3.3.6 — 2026-05-18
 
 ### Changed
