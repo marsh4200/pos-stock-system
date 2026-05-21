@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.5.1 — 2026-05-20
+
+### Fixed (CRITICAL)
+- **Saving theme colours or toggling light/dark mode logged you out**. The global `/api/branding/*` route was bypassing auth for ALL methods (GET + PUT), so PUT requests reached the route handler without `req.user` set, and `requireAdmin` returned 401, which the frontend interprets as session-expired. Now only GETs to `/branding` and `/branding/logo` bypass auth (which is correct — the login screen needs to read branding before you sign in).
+
+---
+
 ## v3.5.0 — 2026-05-20
 
 ### New: Appearance customisation 🎨

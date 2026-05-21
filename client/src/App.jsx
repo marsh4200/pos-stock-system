@@ -683,7 +683,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
           {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
           <div className="mt-auto text-xs text-zinc-600 px-2 py-2">
-            v3.5.0 · Cloud + Auth · Open Source project by{" "}
+            v3.5.1 · Cloud + Auth · Open Source project by{" "}
             <a
               href="https://github.com/marsh4200"
               target="_blank"

@@ -547,7 +547,10 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
 // ALL DATA ENDPOINTS BELOW REQUIRE AUTH
 // ============================================================
 app.use('/api', (req, res, next) => {
-  if (req.path.startsWith('/auth/') || req.path === '/health' || req.path === '/branding' || req.path === '/branding/logo') return next();
+  // Public endpoints: login/setup/status, health, and READ-ONLY branding (so login screen can show the logo + theme)
+  if (req.path.startsWith('/auth/')) return next();
+  if (req.path === '/health') return next();
+  if (req.method === 'GET' && (req.path === '/branding' || req.path === '/branding/logo')) return next();
   return requireAuth(req, res, next);
 });
 
