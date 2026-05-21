@@ -348,7 +348,27 @@ app.get('/api/branding', (req, res) => {
     systemSubtitle: getSetting('systemSubtitle', 'Tooling Stock Management'),
     hasLogo,
     logoVersion: hasLogo ? fs.statSync(logoPath).mtimeMs : 0,
+    // v3.5.0 — theme
+    theme: {
+      mode: getSetting('themeMode', 'dark'),                 // 'dark' | 'light'
+      accent: getSetting('themeAccent', '#f59e0b'),          // primary action / highlight (default amber-500)
+      success: getSetting('themeSuccess', '#10b981'),        // green / available
+      warning: getSetting('themeWarning', '#f59e0b'),        // amber alerts / low stock
+      info: getSetting('themeInfo', '#0ea5e9'),              // blue / updates
+    },
   });
+});
+
+// Save theme (admin only)
+app.put('/api/branding/theme', requireAdmin, (req, res) => {
+  const { mode, accent, success, warning, info } = req.body || {};
+  const hex = /^#[0-9a-fA-F]{6}$/;
+  if (mode && (mode === 'dark' || mode === 'light')) setSetting('themeMode', mode);
+  if (accent && hex.test(accent)) setSetting('themeAccent', accent.toLowerCase());
+  if (success && hex.test(success)) setSetting('themeSuccess', success.toLowerCase());
+  if (warning && hex.test(warning)) setSetting('themeWarning', warning.toLowerCase());
+  if (info && hex.test(info)) setSetting('themeInfo', info.toLowerCase());
+  res.json({ ok: true });
 });
 
 app.get('/api/branding/logo', (req, res) => {
@@ -1386,6 +1406,16 @@ app.get('/api/updater/status', (req, res) => {
     log: readUpdaterLog(200),
     hasPrevious: fs.existsSync(path.join(DATA_DIR, 'previous-sha')),
   });
+});
+
+// Dismiss the "done" / "failed" banner — resets state back to idle
+app.post('/api/updater/dismiss', requirePermission('apply_updates'), (req, res) => {
+  const state = readUpdaterState();
+  if (state === 'running' || state === 'rolling-back') {
+    return res.status(409).json({ error: 'An update is still in progress.' });
+  }
+  try { fs.writeFileSync(UPDATER_STATE, 'idle'); } catch {}
+  res.json({ ok: true });
 });
 
 // Full changelog

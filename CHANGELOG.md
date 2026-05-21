@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.5.0 — 2026-05-20
+
+### New: Appearance customisation 🎨
+
+Settings → new **Appearance** section lets admins fully customise how the app looks:
+
+- **Theme Mode**: 🌙 Dark (default) or ☀️ Light
+- **Four custom colour pickers**:
+  - **Accent / Primary** — buttons, highlights, the Issue Stock button
+  - **Success** — green ✓ marks, "Available" badges
+  - **Warning** — low-stock alerts, "OUT" badges, overdue
+  - **Info / Updates** — update buttons, info badges
+- **Live preview** below the pickers so you see your changes before saving
+- **Reset to Defaults** button (workshop amber on dark)
+
+The colours are picked per-server. Pick once, every user on that install sees the new look. Hex codes can be typed in directly or chosen via the colour wheel.
+
+Danger / delete colours (red) are intentionally non-customisable — universal warning signal.
+
+### Technical
+- Theme stored in `settings` table (alongside system name/subtitle)
+- Applied via a single `<ThemeStyle>` component that injects scoped CSS overrides for Tailwind utility classes — no class renames needed throughout the 3500-line app
+- Light mode flips the zinc colour scale and remaps backgrounds/text for readability
+
+---
+
+## v3.4.1 — 2026-05-20
+
+### Fixed
+- "UPDATE SUCCESSFUL" banner and log box no longer linger forever after a successful update. Now:
+  - Auto-dismisses 6 seconds after the green banner appears (resets server-side state back to idle).
+  - Added a manual **Dismiss** button on both the success and failure cards in case you want to clear them sooner.
+
+---
+
 ## v3.4.0 — 2026-05-18
 
 ### New: In-house tool check-in/check-out 🔧

@@ -189,13 +189,163 @@ function Field({ label, className = '', children }) {
 // ============================================================
 // BRANDING (used on login/setup/header)
 // ============================================================
+// ---------- Theme defaults ----------
+const DEFAULT_THEME = {
+  mode: 'dark',
+  accent: '#f59e0b',   // amber-500
+  success: '#10b981',  // emerald-500
+  warning: '#f59e0b',  // amber-500
+  info: '#0ea5e9',     // sky-500
+};
+
+// Convert hex (#RRGGBB) to "R G B" for use in CSS rgb(... / alpha)
+function hexToRgb(hex) {
+  const m = /^#?([a-f0-9]{2})([a-f0-9]{2})([a-f0-9]{2})$/i.exec(hex || '');
+  if (!m) return '245 158 11';
+  return `${parseInt(m[1], 16)} ${parseInt(m[2], 16)} ${parseInt(m[3], 16)}`;
+}
+
+// Lighten/darken hex by a percentage (-100..100). Used for hover states.
+function shiftHex(hex, pct) {
+  const m = /^#?([a-f0-9]{2})([a-f0-9]{2})([a-f0-9]{2})$/i.exec(hex || '');
+  if (!m) return hex;
+  const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+  const f = (v) => {
+    const n = pct >= 0 ? v + (255 - v) * (pct / 100) : v + v * (pct / 100);
+    return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  };
+  return `#${f(r)}${f(g)}${f(b)}`;
+}
+
+// Pick black or white text for a given background hex, by luminance
+function textOn(hex) {
+  const m = /^#?([a-f0-9]{2})([a-f0-9]{2})([a-f0-9]{2})$/i.exec(hex || '');
+  if (!m) return '#000';
+  const r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#18181b' : '#ffffff';
+}
+
+// Inject CSS that overrides the Tailwind colour utilities we use throughout the app.
+// This lets us re-theme without rewriting the JSX. Light/dark mode swaps the zinc scale.
+function ThemeStyle({ theme }) {
+  const t = { ...DEFAULT_THEME, ...(theme || {}) };
+  const accent = t.accent, success = t.success, warning = t.warning, info = t.info;
+  const accentDark = shiftHex(accent, -10);
+  const accentLight = shiftHex(accent, 10);
+  const onAccent = textOn(accent);
+
+  const light = t.mode === 'light';
+  // Zinc scale: dark uses the original Tailwind zinc; light flips it so darker = darker text
+  const z = light ? {
+    50: '#fafafa', 100: '#f4f4f5', 200: '#e4e4e7', 300: '#d4d4d8', 400: '#a1a1aa',
+    500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b', 950: '#09090b',
+  } : {
+    50: '#fafafa', 100: '#f4f4f5', 200: '#e4e4e7', 300: '#d4d4d8', 400: '#a1a1aa',
+    500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b', 950: '#09090b',
+  };
+
+  // In light mode, we re-map the "background" zincs (950, 900, 800) to white/light-greys
+  // and the "text" zincs (100, 300, 400, 500) to dark greys — but we leave most things
+  // intact so the layout doesn't break.
+  const css = `
+:root {
+  --accent: ${accent};
+  --accent-hover: ${accentLight};
+  --accent-text: ${onAccent};
+  --success: ${success};
+  --warning: ${warning};
+  --info: ${info};
+}
+
+/* === Accent (was amber-500) === */
+.bg-amber-500 { background-color: ${accent} !important; }
+.hover\\:bg-amber-400:hover { background-color: ${accentLight} !important; }
+.bg-amber-500\\/5 { background-color: rgb(${hexToRgb(accent)} / 0.05) !important; }
+.bg-amber-500\\/10 { background-color: rgb(${hexToRgb(accent)} / 0.10) !important; }
+.bg-amber-500\\/20 { background-color: rgb(${hexToRgb(accent)} / 0.20) !important; }
+.text-amber-500 { color: ${accent} !important; }
+.text-amber-400 { color: ${accentLight} !important; }
+.text-amber-300 { color: ${shiftHex(accent, 30)} !important; }
+.text-amber-200 { color: ${shiftHex(accent, 50)} !important; }
+.border-amber-500 { border-color: ${accent} !important; }
+.border-amber-500\\/30 { border-color: rgb(${hexToRgb(accent)} / 0.30) !important; }
+.border-amber-500\\/40 { border-color: rgb(${hexToRgb(accent)} / 0.40) !important; }
+.focus\\:border-amber-500:focus { border-color: ${accent} !important; }
+.accent-amber-500 { accent-color: ${accent} !important; }
+
+/* Ensure text on amber-500 backgrounds stays readable for the chosen colour */
+button.bg-amber-500, .bg-amber-500.text-zinc-900, .bg-amber-500.text-zinc-950 { color: ${onAccent} !important; }
+
+/* === Success (was emerald-500) === */
+.bg-emerald-500 { background-color: ${success} !important; }
+.hover\\:bg-emerald-400:hover { background-color: ${shiftHex(success, 10)} !important; }
+.bg-emerald-500\\/10 { background-color: rgb(${hexToRgb(success)} / 0.10) !important; }
+.bg-emerald-500\\/15 { background-color: rgb(${hexToRgb(success)} / 0.15) !important; }
+.bg-emerald-500\\/20 { background-color: rgb(${hexToRgb(success)} / 0.20) !important; }
+.text-emerald-500 { color: ${success} !important; }
+.text-emerald-400 { color: ${shiftHex(success, 10)} !important; }
+.text-emerald-300 { color: ${shiftHex(success, 30)} !important; }
+.text-emerald-200 { color: ${shiftHex(success, 50)} !important; }
+.border-emerald-500\\/30 { border-color: rgb(${hexToRgb(success)} / 0.30) !important; }
+.border-emerald-500\\/40 { border-color: rgb(${hexToRgb(success)} / 0.40) !important; }
+
+/* === Info (was sky-500) === */
+.bg-sky-500 { background-color: ${info} !important; }
+.hover\\:bg-sky-400:hover { background-color: ${shiftHex(info, 10)} !important; }
+.bg-sky-500\\/10 { background-color: rgb(${hexToRgb(info)} / 0.10) !important; }
+.text-sky-400 { color: ${shiftHex(info, 10)} !important; }
+.text-sky-300 { color: ${shiftHex(info, 30)} !important; }
+.text-sky-200 { color: ${shiftHex(info, 50)} !important; }
+.border-sky-500\\/30 { border-color: rgb(${hexToRgb(info)} / 0.30) !important; }
+.hover\\:text-sky-300:hover { color: ${shiftHex(info, 30)} !important; }
+
+${light ? `
+/* === LIGHT MODE === flips zinc scale on backgrounds; keeps text readable */
+body, .bg-zinc-950 { background-color: #ffffff !important; color: #18181b !important; }
+.bg-zinc-900 { background-color: #f4f4f5 !important; }
+.bg-zinc-800 { background-color: #e4e4e7 !important; }
+.bg-zinc-700 { background-color: #d4d4d8 !important; }
+.hover\\:bg-zinc-800:hover { background-color: #e4e4e7 !important; }
+.hover\\:bg-zinc-700:hover { background-color: #d4d4d8 !important; }
+.bg-zinc-800\\/40 { background-color: rgb(228 228 231 / 0.5) !important; }
+.bg-black\\/50 { background-color: rgb(244 244 245) !important; }
+.bg-black\\/60, .bg-black\\/70 { background-color: rgb(0 0 0 / 0.4) !important; }
+
+.text-zinc-100 { color: #18181b !important; }
+.text-zinc-200 { color: #27272a !important; }
+.text-zinc-300 { color: #3f3f46 !important; }
+.text-zinc-400 { color: #52525b !important; }
+.text-zinc-500 { color: #71717a !important; }
+.text-zinc-600 { color: #a1a1aa !important; }
+.text-white { color: #18181b !important; }
+.hover\\:text-white:hover { color: #18181b !important; }
+
+.border-zinc-800 { border-color: #e4e4e7 !important; }
+.border-zinc-700 { border-color: #d4d4d8 !important; }
+
+input.input, select.input, textarea.input, .input {
+  background-color: #ffffff !important;
+  color: #18181b !important;
+  border-color: #d4d4d8 !important;
+}
+` : ''}
+`;
+  return <style dangerouslySetInnerHTML={{ __html: css }} />;
+}
+
 function useBranding() {
-  const [branding, setBranding] = useState({ systemName: 'EVERTON ENGINEERING', systemSubtitle: 'Tooling Stock Management', hasLogo: false, logoVersion: 0 });
+  const [branding, setBranding] = useState({
+    systemName: 'EVERTON ENGINEERING',
+    systemSubtitle: 'Tooling Stock Management',
+    hasLogo: false, logoVersion: 0,
+    theme: DEFAULT_THEME,
+  });
   const refresh = useCallback(async () => {
     try {
       const r = await fetch('/api/branding');
       const d = await r.json();
-      setBranding(d);
+      setBranding({ ...d, theme: { ...DEFAULT_THEME, ...(d.theme || {}) } });
     } catch {}
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
@@ -389,12 +539,24 @@ export default function App() {
   }, []);
 
   if (stage === 'loading') {
-    return <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>;
+    return <>
+      <ThemeStyle theme={branding.theme} />
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
+    </>;
   }
-  if (stage === 'setup') return <SetupScreen branding={branding} onDone={(u) => { setUser(u); setStage('app'); }} />;
-  if (stage === 'login') return <LoginScreen branding={branding} onLogin={(u) => { setUser(u); setStage('app'); }} />;
-  return <MainApp user={user} branding={branding} refreshBranding={refreshBranding}
-    onLogout={() => { setToken(null); setUser(null); setStage('login'); }} />;
+  if (stage === 'setup') return <>
+    <ThemeStyle theme={branding.theme} />
+    <SetupScreen branding={branding} onDone={(u) => { setUser(u); setStage('app'); }} />
+  </>;
+  if (stage === 'login') return <>
+    <ThemeStyle theme={branding.theme} />
+    <LoginScreen branding={branding} onLogin={(u) => { setUser(u); setStage('app'); }} />
+  </>;
+  return <>
+    <ThemeStyle theme={branding.theme} />
+    <MainApp user={user} branding={branding} refreshBranding={refreshBranding}
+      onLogout={() => { setToken(null); setUser(null); setStage('login'); }} />
+  </>;
 }
 
 // ============================================================
@@ -521,7 +683,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
           {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
           <div className="mt-auto text-xs text-zinc-600 px-2 py-2">
-            v3.4.0 · Cloud + Auth · Open Source project by{" "}
+            v3.5.0 · Cloud + Auth · Open Source project by{" "}
             <a
               href="https://github.com/marsh4200"
               target="_blank"
@@ -2936,7 +3098,14 @@ function UpdatesSection() {
   });
   useEffect(() => {
     if (!justUpdated) return;
-    const t = setTimeout(() => setJustUpdated(false), 6000);
+    const t = setTimeout(() => {
+      setJustUpdated(false);
+      // Also clear the server-side "done" state so the UPDATE SUCCESSFUL block + log
+      // also disappear, since the user has clearly seen the result by now.
+      apiPost('/updater/dismiss').then(() => {
+        setStatus(s => ({ ...s, state: 'idle' }));
+      }).catch(() => {});
+    }, 6000);
     return () => clearTimeout(t);
   }, [justUpdated]);
 
@@ -3054,6 +3223,13 @@ function UpdatesSection() {
       const r = await fetch('/api/updater/changelog', { headers: { 'Authorization': `Bearer ${getToken()}` } });
       setChangelog(await r.text());
       setShowChangelog(true);
+    } catch {}
+  };
+
+  const dismissStatus = async () => {
+    try {
+      await apiPost('/updater/dismiss');
+      setStatus(s => ({ ...s, state: 'idle' }));
     } catch {}
   };
 
@@ -3194,7 +3370,13 @@ function UpdatesSection() {
                 {version?.version && <div className="text-xs text-emerald-300 mt-0.5">Now running v{version.version}</div>}
               </div>
             </div>
-            <button onClick={() => setShowLog(s => !s)} className="text-xs text-emerald-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setShowLog(s => !s)} className="text-xs text-emerald-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+              <button onClick={dismissStatus}
+                className="text-xs bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 px-3 py-1 rounded">
+                Dismiss
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3208,7 +3390,13 @@ function UpdatesSection() {
                 <div className="text-xs text-red-300 mt-0.5">You can roll back below or check the log.</div>
               </div>
             </div>
-            <button onClick={() => setShowLog(s => !s)} className="text-xs text-red-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setShowLog(s => !s)} className="text-xs text-red-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
+              <button onClick={dismissStatus}
+                className="text-xs bg-red-500/30 hover:bg-red-500/40 text-red-100 px-3 py-1 rounded">
+                Dismiss
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3261,6 +3449,133 @@ function UpdatesSection() {
         </div>
       )}
     </div>
+  );
+}
+
+// ============================================================
+// AppearanceSection — theme + colour customization (v3.5.0)
+// ============================================================
+function AppearanceSection({ branding, refreshBranding, showMsg }) {
+  const t = branding.theme || DEFAULT_THEME;
+  const [mode, setMode] = useState(t.mode || 'dark');
+  const [accent, setAccent] = useState(t.accent || DEFAULT_THEME.accent);
+  const [success, setSuccess] = useState(t.success || DEFAULT_THEME.success);
+  const [warning, setWarning] = useState(t.warning || DEFAULT_THEME.warning);
+  const [info, setInfo] = useState(t.info || DEFAULT_THEME.info);
+  const [busy, setBusy] = useState(false);
+
+  // Re-sync when branding updates externally
+  useEffect(() => {
+    const x = branding.theme || DEFAULT_THEME;
+    setMode(x.mode || 'dark');
+    setAccent(x.accent || DEFAULT_THEME.accent);
+    setSuccess(x.success || DEFAULT_THEME.success);
+    setWarning(x.warning || DEFAULT_THEME.warning);
+    setInfo(x.info || DEFAULT_THEME.info);
+  }, [branding.theme]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await apiPut('/branding/theme', { mode, accent, success, warning, info });
+      await refreshBranding();
+      showMsg('ok', 'Appearance updated');
+    } catch (e) {
+      showMsg('err', e.message);
+    } finally { setBusy(false); }
+  };
+
+  const resetDefaults = async () => {
+    setBusy(true);
+    try {
+      await apiPut('/branding/theme', { ...DEFAULT_THEME });
+      await refreshBranding();
+      showMsg('ok', 'Reset to defaults');
+    } catch (e) { showMsg('err', e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 max-w-3xl">
+      <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+        <Sparkles className="w-5 h-5" style={{ color: accent }} /> Appearance
+      </h3>
+      <p className="text-sm text-zinc-400 mb-5">
+        Change the look of the app. Customisations apply system-wide and are visible to everyone.
+      </p>
+
+      {/* Mode toggle */}
+      <Field label="Theme Mode">
+        <div className="flex gap-2">
+          <button onClick={() => setMode('dark')}
+            className={`flex-1 px-4 py-2 rounded-md border text-sm font-medium ${
+              mode === 'dark' ? 'border-zinc-500 bg-zinc-800 text-white' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+            }`}>🌙 Dark</button>
+          <button onClick={() => setMode('light')}
+            className={`flex-1 px-4 py-2 rounded-md border text-sm font-medium ${
+              mode === 'light' ? 'border-zinc-500 bg-zinc-800 text-white' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'
+            }`}>☀️ Light</button>
+        </div>
+      </Field>
+
+      <div className="mt-5 grid grid-cols-2 gap-4">
+        <ColourPicker label="Accent / Primary"
+          help="Buttons, highlights, the Issue Stock button. (Was amber.)"
+          value={accent} onChange={setAccent} />
+        <ColourPicker label="Success"
+          help="Green ✓ marks, 'Available', confirmations. (Was emerald.)"
+          value={success} onChange={setSuccess} />
+        <ColourPicker label="Warning"
+          help="Low-stock alerts, 'OUT' badges, overdue. (Was amber.)"
+          value={warning} onChange={setWarning} />
+        <ColourPicker label="Info / Updates"
+          help="Update buttons, info badges. (Was sky blue.)"
+          value={info} onChange={setInfo} />
+      </div>
+
+      {/* Live preview */}
+      <div className="mt-6 p-4 border border-zinc-800 rounded-md bg-zinc-950">
+        <div className="text-xs text-zinc-500 uppercase tracking-wide mb-3">Preview</div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <button style={{ background: accent, color: textOn(accent) }}
+            className="px-4 py-2 font-semibold rounded-md text-sm">Primary Button</button>
+          <span style={{ background: 'rgb(' + hexToRgb(success) + ' / 0.2)', color: shiftHex(success, 30) }}
+            className="text-xs px-2 py-1 rounded">Available</span>
+          <span style={{ background: 'rgb(' + hexToRgb(warning) + ' / 0.2)', color: shiftHex(warning, 30) }}
+            className="text-xs px-2 py-1 rounded">Low Stock · 3</span>
+          <button style={{ background: info, color: textOn(info) }}
+            className="px-3 py-1.5 font-semibold rounded-md text-xs">Update Now</button>
+          <span className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-300">Defective (always red)</span>
+        </div>
+      </div>
+
+      <div className="mt-5 flex gap-2">
+        <button onClick={save} disabled={busy}
+          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-zinc-900 font-semibold rounded-md flex items-center gap-2">
+          {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+          Save Appearance
+        </button>
+        <button onClick={resetDefaults} disabled={busy}
+          className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md">
+          Reset to Defaults
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ColourPicker({ label, help, value, onChange }) {
+  return (
+    <Field label={label}>
+      <div className="flex gap-2 items-center">
+        <input type="color" value={value} onChange={e => onChange(e.target.value)}
+          className="h-10 w-14 bg-transparent border border-zinc-700 rounded cursor-pointer" />
+        <input type="text" value={value}
+          onChange={e => { const v = e.target.value; if (/^#?[0-9a-fA-F]{0,6}$/.test(v)) onChange(v.startsWith('#') ? v : '#' + v); }}
+          className="input font-mono uppercase" maxLength={7} />
+      </div>
+      {help && <div className="text-xs text-zinc-500 mt-1">{help}</div>}
+    </Field>
   );
 }
 
@@ -3413,6 +3728,9 @@ function SettingsScreen({ refresh, branding, refreshBranding }) {
           </div>
         </div>
       </div>
+
+      {/* Appearance */}
+      <AppearanceSection branding={branding} refreshBranding={refreshBranding} showMsg={showMsg} />
 
       {/* Updates */}
       <UpdatesSection />
