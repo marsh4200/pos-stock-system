@@ -272,8 +272,14 @@ function requirePermission(perm) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  if (!req.user) {
+    console.log(`[AUTH DEBUG] requireAdmin: no req.user on ${req.method} ${req.path}`);
+    return res.status(401).json({ error: 'Not authenticated (admin check, no user)' });
+  }
+  if (req.user.role !== 'admin') {
+    console.log(`[AUTH DEBUG] requireAdmin: user ${req.user.username} role=${req.user.role} blocked on ${req.method} ${req.path}`);
+    return res.status(403).json({ error: 'Admins only' });
+  }
   next();
 }
 
@@ -298,7 +304,10 @@ function extractToken(req) {
 function requireAuth(req, res, next) {
   const token = extractToken(req);
   const session = getValidSession(token);
-  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!session) {
+    console.log(`[AUTH DEBUG] requireAuth: no valid session on ${req.method} ${req.path} (token present: ${!!token})`);
+    return res.status(401).json({ error: 'Not authenticated (no valid session)' });
+  }
 
   const user = db.prepare('SELECT id, username, role, permissions FROM users WHERE id = ?').get(session.userId);
   if (!user) {
@@ -361,6 +370,7 @@ app.get('/api/branding', (req, res) => {
 
 // Save theme (admin only)
 app.put('/api/branding/theme', requireAdmin, (req, res) => {
+  console.log(`[AUTH DEBUG] /branding/theme handler reached. User: ${req.user?.username} (${req.user?.role}). Body keys: ${Object.keys(req.body || {}).join(',')}`);
   const { mode, accent, success, warning, info } = req.body || {};
   const hex = /^#[0-9a-fA-F]{6}$/;
   if (mode && (mode === 'dark' || mode === 'light')) setSetting('themeMode', mode);
@@ -547,6 +557,10 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
 // ALL DATA ENDPOINTS BELOW REQUIRE AUTH
 // ============================================================
 app.use('/api', (req, res, next) => {
+  // Trace every request through the global API gate so we can see auth flow
+  if (req.path.includes('theme') || req.path.includes('branding')) {
+    console.log(`[AUTH DEBUG] global /api gate: ${req.method} ${req.path} (authHeader present: ${!!req.headers.authorization})`);
+  }
   // Public endpoints: login/setup/status, health, and READ-ONLY branding (so login screen can show the logo + theme)
   if (req.path.startsWith('/auth/')) return next();
   if (req.path === '/health') return next();

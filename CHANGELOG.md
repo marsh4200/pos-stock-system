@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.5.2 — 2026-05-21
+
+### Diagnostic build
+- Added detailed server-side logging to trace why theme saves return 401. After this update, every PUT to `/api/branding/theme` writes diagnostic lines to the systemd journal so we can pinpoint the failing middleware.
+
+---
+
 ## v3.5.1 — 2026-05-20
 
 ### Fixed (CRITICAL)
