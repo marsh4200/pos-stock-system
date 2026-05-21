@@ -521,7 +521,7 @@ function MainApp({ user, branding, refreshBranding, onLogout }) {
           {user?.role === 'admin' && <NavBtn icon={UserCog} label="Accounts" active={route==='users'} onClick={() => setRoute('users')} />}
           {user?.role === 'admin' && <NavBtn icon={SettingsIcon} label="Settings" active={route==='settings'} onClick={() => setRoute('settings')} />}
           <div className="mt-auto text-xs text-zinc-600 px-2 py-2">
-            v3.4.1 · Cloud + Auth · Open Source project by{" "}
+            v3.4.0 · Cloud + Auth · Open Source project by{" "}
             <a
               href="https://github.com/marsh4200"
               target="_blank"
@@ -2936,14 +2936,7 @@ function UpdatesSection() {
   });
   useEffect(() => {
     if (!justUpdated) return;
-    const t = setTimeout(() => {
-      setJustUpdated(false);
-      // Also clear the server-side "done" state so the UPDATE SUCCESSFUL block + log
-      // also disappear, since the user has clearly seen the result by now.
-      apiPost('/updater/dismiss').then(() => {
-        setStatus(s => ({ ...s, state: 'idle' }));
-      }).catch(() => {});
-    }, 6000);
+    const t = setTimeout(() => setJustUpdated(false), 6000);
     return () => clearTimeout(t);
   }, [justUpdated]);
 
@@ -3061,13 +3054,6 @@ function UpdatesSection() {
       const r = await fetch('/api/updater/changelog', { headers: { 'Authorization': `Bearer ${getToken()}` } });
       setChangelog(await r.text());
       setShowChangelog(true);
-    } catch {}
-  };
-
-  const dismissStatus = async () => {
-    try {
-      await apiPost('/updater/dismiss');
-      setStatus(s => ({ ...s, state: 'idle' }));
     } catch {}
   };
 
@@ -3208,13 +3194,7 @@ function UpdatesSection() {
                 {version?.version && <div className="text-xs text-emerald-300 mt-0.5">Now running v{version.version}</div>}
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setShowLog(s => !s)} className="text-xs text-emerald-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
-              <button onClick={dismissStatus}
-                className="text-xs bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 px-3 py-1 rounded">
-                Dismiss
-              </button>
-            </div>
+            <button onClick={() => setShowLog(s => !s)} className="text-xs text-emerald-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
           </div>
         </div>
       )}
@@ -3228,13 +3208,7 @@ function UpdatesSection() {
                 <div className="text-xs text-red-300 mt-0.5">You can roll back below or check the log.</div>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setShowLog(s => !s)} className="text-xs text-red-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
-              <button onClick={dismissStatus}
-                className="text-xs bg-red-500/30 hover:bg-red-500/40 text-red-100 px-3 py-1 rounded">
-                Dismiss
-              </button>
-            </div>
+            <button onClick={() => setShowLog(s => !s)} className="text-xs text-red-300 underline">{showLog ? 'Hide' : 'Show'} log</button>
           </div>
         </div>
       )}

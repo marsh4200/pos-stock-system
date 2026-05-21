@@ -1,14 +1,5 @@
 # Changelog
 
-## v3.4.1 — 2026-05-20
-
-### Fixed
-- "UPDATE SUCCESSFUL" banner and log box no longer linger forever after a successful update. Now:
-  - Auto-dismisses 6 seconds after the green banner appears (resets server-side state back to idle).
-  - Added a manual **Dismiss** button on both the success and failure cards in case you want to clear them sooner.
-
----
-
 ## v3.4.0 — 2026-05-18
 
 ### New: In-house tool check-in/check-out 🔧
