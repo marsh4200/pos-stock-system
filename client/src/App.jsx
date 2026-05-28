@@ -1068,13 +1068,17 @@ function ProductsScreen({ products, barcodes, beeper, refresh, canEdit = true, c
   const [deleting, setDeleting] = useState(null);
 
   const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-    return products.filter(p =>
-      p.name.toLowerCase().includes(q) ||
-      (p.sku || '').toLowerCase().includes(q) ||
-      (p.category || '').toLowerCase().includes(q)
-    );
-  }, [products, search]);
+    const q = search.toLowerCase().trim();
+    return products.filter(p => {
+      const pbcs = barcodes.filter(b => b.productId === p.id);
+      return (
+        p.name.toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q) ||
+        pbcs.some(b => (b.value || '').toLowerCase().includes(q))
+      );
+    });
+  }, [products, barcodes, search]);
 
   const saveProduct = async (data) => {
     try {
@@ -1131,7 +1135,7 @@ function ProductsScreen({ products, barcodes, beeper, refresh, canEdit = true, c
       <div className="relative mb-4">
         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
         <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, SKU, or category…"
+          placeholder="Search by name, SKU, category, or barcode…"
           className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-10 pr-4 py-2.5 focus:outline-none focus:border-amber-500" />
       </div>
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
